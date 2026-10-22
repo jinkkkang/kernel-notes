@@ -11,7 +11,25 @@
 
 | 笔记 | 说明 |
 |------|------|
-| [process-management.md](./process-management.md) | **进程管理（大章）**：总览与 `CLONE_*`、`task_struct` 字段分组、PID/pidns、fork/clone/clone3、内核线程、exec、exit/僵尸回收、上下文切换入口、**信号与进程**、观测清单。调度选人算法（EEVDF）另章。 |
+| [process-management/](./process-management/) | **进程管理（大章）**：总览与 `CLONE_*`、`task_struct`、PID/pidns、fork/clone、内核线程、exec、exit/回收、上下文切换入口、信号、观测清单。调度选人算法（EEVDF）另章。 |
+
+### 进程管理子章节
+
+| 文件 | 内容 |
+|------|------|
+| [README.md](./process-management/README.md) | 章节目录与未覆盖说明 |
+| [01-overview.md](./process-management/01-overview.md) | 总览与边界 |
+| [02-task-struct.md](./process-management/02-task-struct.md) | 任务抽象：task_struct |
+| [03-pid-namespaces.md](./process-management/03-pid-namespaces.md) | PID 与命名空间 |
+| [04-fork-clone.md](./process-management/04-fork-clone.md) | 创建路径：fork / clone / clone3 / vfork |
+| [05-kernel-threads.md](./process-management/05-kernel-threads.md) | 内核线程与特殊任务 |
+| [06-exec.md](./process-management/06-exec.md) | 地址空间交接：exec |
+| [07-exit-reap.md](./process-management/07-exit-reap.md) | 退出、僵尸与回收 |
+| [08-context-switch.md](./process-management/08-context-switch.md) | 上下文切换（进程管理视角） |
+| [09-signals.md](./process-management/09-signals.md) | 信号与进程 |
+| [10-observability.md](./process-management/10-observability.md) | 观测与调试清单 |
+
+> 旧链接 [process-management.md](./process-management.md) 仍保留为跳转说明。
 
 ## 约定
 
