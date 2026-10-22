@@ -12,6 +12,7 @@
 | 笔记 | 说明 |
 |------|------|
 | [process-management/](./process-management/) | **进程管理（大章）**：总览与 `CLONE_*`、`task_struct`、PID/pidns、fork/clone、内核线程、exec、exit/回收、上下文切换入口、信号、观测清单。调度选人算法（EEVDF）另章。 |
+| [locks-and-ds/](./locks-and-ds/) | **同步原语与内核数据结构（大章）**：读内核够用的 C、`list_head`/hlist、树与映射容器、atomic/refcount、spinlock、mutex/rwsem/seqlock、RCU、lockdep 与踩坑。面向 C 新手补嵌入式链表与宏。 |
 
 ### 进程管理子章节
 
@@ -30,6 +31,20 @@
 | [10-observability.md](./process-management/10-observability.md) | 观测与调试清单 |
 
 > 旧链接 [process-management.md](./process-management.md) 仍保留为跳转说明。
+
+### 同步原语与内核数据结构子章节
+
+| 文件 | 内容 |
+|------|------|
+| [README.md](./locks-and-ds/README.md) | 章节目录、与进程章边界、阅读顺序 |
+| [01-c-primer.md](./locks-and-ds/01-c-primer.md) | 读内核够用的 C（含 `container_of`） |
+| [02-list.md](./locks-and-ds/02-list.md) | `list_head` / hlist |
+| [03-trees-maps.md](./locks-and-ds/03-trees-maps.md) | rbtree / xarray / maple / idr / hashtable |
+| [04-atomics-refcount.md](./locks-and-ds/04-atomics-refcount.md) | atomic 与 `refcount_t` |
+| [05-spinlock.md](./locks-and-ds/05-spinlock.md) | 自旋锁与 IRQ 变体 |
+| [06-sleepable-locks.md](./locks-and-ds/06-sleepable-locks.md) | mutex / rwsem / seqlock |
+| [07-rcu.md](./locks-and-ds/07-rcu.md) | RCU 与 tasks RCU 衔接 |
+| [08-observability.md](./locks-and-ds/08-observability.md) | lockdep、lock_stat、踩坑清单 |
 
 ## 约定
 
