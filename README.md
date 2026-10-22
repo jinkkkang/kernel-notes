@@ -15,6 +15,7 @@
 | [locks-and-ds/](./locks-and-ds/) | **同步原语与内核数据结构（大章）**：读内核够用的 C、`list_head`/hlist、树与映射容器、atomic/refcount、spinlock、mutex/rwsem/seqlock、RCU、lockdep 与踩坑。面向 C 新手补嵌入式链表与宏。 |
 | [cgroup/](./cgroup/) | **控制组（大章）**：cgroup v2 core 与对象模型、层次接口、fork/exit 挂钩与 cgroup ns、cpu/cpuset、memory、io/pids/freezer、PSI/rstat、本机观测。完整调度/MM/块层另章。 |
 | [scheduler/](./scheduler/) | **调度（大章）**：调度类链、`rq`/`cfs_rq`/`sched_entity`、EEVDF、入队与唤醒、负载均衡、cgroup cpu 衔接、RT/DL/sched_ext 边界、观测与性能分析配方。 |
+| [memory-management/](./memory-management/) | **内存管理（大章）**：物理页与 zone、buddy、SLUB、vmalloc、mm/VMA、缺页、页缓存、THP/hugetlb、回收与 OOM、KVM 二维页表、balloon/FPR、本机 `/proc` 观测与症状剧本。cgroup charge 与完整 VFS 另章。 |
 
 ### 进程管理子章节
 
@@ -77,6 +78,26 @@
 | [07-cgroup-cpu.md](./scheduler/07-cgroup-cpu.md) | 与 cgroup cpu 衔接 |
 | [08-observability.md](./scheduler/08-observability.md) | 观测与本机实测 |
 | [09-perf-analysis.md](./scheduler/09-perf-analysis.md) | 性能分析配方 |
+
+### 内存管理子章节
+
+| 文件 | 内容 |
+|------|------|
+| [README.md](./memory-management/README.md) | 章节目录、阅读顺序、与 cgroup/调度/VFS 边界 |
+| [01-overview.md](./memory-management/01-overview.md) | 物理线与虚拟线、总图 |
+| [02-physical-layout.md](./memory-management/02-physical-layout.md) | page / folio / node / zone / sparsemem |
+| [03-buddy.md](./memory-management/03-buddy.md) | buddy、GFP、水位、PCP、碎片 |
+| [04-slab.md](./memory-management/04-slab.md) | SLUB sheaf 与 `kmem_cache` |
+| [05-vmalloc-and-kernel-va.md](./memory-management/05-vmalloc-and-kernel-va.md) | vmalloc 与内核虚拟地址 |
+| [06-mm-and-vma.md](./memory-management/06-mm-and-vma.md) | `mm_struct`、VMA、maple tree、mmap/brk |
+| [07-page-fault.md](./memory-management/07-page-fault.md) | 缺页：匿名、文件、COW |
+| [08-page-cache-and-writeback.md](./memory-management/08-page-cache-and-writeback.md) | 页缓存与脏页（内存侧） |
+| [09-thp-and-hugetlb.md](./memory-management/09-thp-and-hugetlb.md) | THP、mTHP、hugetlb |
+| [10-reclaim.md](./memory-management/10-reclaim.md) | LRU/MGLRU、kswapd、swap、OOM |
+| [11-kvm-memory.md](./memory-management/11-kvm-memory.md) | EPT/NPT、memslot、TDP MMU |
+| [12-balloon-fpr-and-overcommit.md](./memory-management/12-balloon-fpr-and-overcommit.md) | balloon、FPR、KSM、virtio-mem |
+| [13-observability.md](./memory-management/13-observability.md) | 本机 `/proc` 与 PSI |
+| [14-perf-and-dev-practice.md](./memory-management/14-perf-and-dev-practice.md) | 按症状排障 |
 
 ## 约定
 
