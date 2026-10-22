@@ -13,6 +13,7 @@
 |------|------|
 | [process-management/](./process-management/) | **进程管理（大章）**：总览与 `CLONE_*`、`task_struct`、PID/pidns、fork/clone、内核线程、exec、exit/回收、上下文切换入口、信号、观测清单。调度选人算法（EEVDF）另章。 |
 | [locks-and-ds/](./locks-and-ds/) | **同步原语与内核数据结构（大章）**：读内核够用的 C、`list_head`/hlist、树与映射容器、atomic/refcount、spinlock、mutex/rwsem/seqlock、RCU、lockdep 与踩坑。面向 C 新手补嵌入式链表与宏。 |
+| [cgroup/](./cgroup/) | **控制组（大章）**：cgroup v2 core 与对象模型、层次接口、fork/exit 挂钩与 cgroup ns、cpu/cpuset、memory、io/pids/freezer、PSI/rstat、本机观测。完整调度/MM/块层另章。 |
 
 ### 进程管理子章节
 
@@ -45,6 +46,21 @@
 | [06-sleepable-locks.md](./locks-and-ds/06-sleepable-locks.md) | mutex / rwsem / seqlock |
 | [07-rcu.md](./locks-and-ds/07-rcu.md) | RCU 与 tasks RCU 衔接 |
 | [08-observability.md](./locks-and-ds/08-observability.md) | lockdep、lock_stat、踩坑清单 |
+
+### cgroup 子章节
+
+| 文件 | 内容 |
+|------|------|
+| [README.md](./cgroup/README.md) | 章节目录、阅读顺序、与其它章边界 |
+| [01-overview.md](./cgroup/01-overview.md) | 总览与边界（v2 默认） |
+| [02-core-objects.md](./cgroup/02-core-objects.md) | cgroup / css / css_set / subsys |
+| [03-hierarchy-control.md](./cgroup/03-hierarchy-control.md) | subtree_control、迁移、委托 |
+| [04-lifecycle-hooks.md](./cgroup/04-lifecycle-hooks.md) | fork/exit 挂钩、CLONE_INTO_CGROUP、cgroup ns |
+| [05-cpu-cpuset.md](./cgroup/05-cpu-cpuset.md) | cpu / cpuset 控制器 |
+| [06-memory.md](./cgroup/06-memory.md) | memory 控制器与 charge 直觉 |
+| [07-io-pids-misc.md](./cgroup/07-io-pids-misc.md) | io / pids / freezer / 其它 |
+| [08-psi-rstat.md](./cgroup/08-psi-rstat.md) | PSI 与 rstat |
+| [09-observability.md](./cgroup/09-observability.md) | 观测与本机实测 |
 
 ## 约定
 
