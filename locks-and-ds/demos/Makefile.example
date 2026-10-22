@@ -1,0 +1,14 @@
+# 仅当本机已安装对应内核头文件时可试用：
+#   make -f Makefile.example
+#   sudo insmod kmod_list_example.ko
+# 教学示例，勿用于生产。
+
+obj-m += kmod_list_example.o kmod_idr_example.o
+
+KDIR ?= /lib/modules/$(shell uname -r)/build
+
+all:
+	$(MAKE) -C $(KDIR) M=$(CURDIR) modules
+
+clean:
+	$(MAKE) -C $(KDIR) M=$(CURDIR) clean

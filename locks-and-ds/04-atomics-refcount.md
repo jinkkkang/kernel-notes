@@ -129,4 +129,33 @@ RCU                   →  读多写少：读者几乎无锁，写者更新后�
 
 ---
 
+---
+
+## 4.6 可执行 Demo：丢更新 vs 原子加
+
+源码：[demos/04_atomic_race.c](./demos/04_atomic_race.c)——16 线程 × 200 万次；普通读-改-写 vs C11 `atomic_fetch_add`。
+
+```bash
+cd locks-and-ds/demos
+gcc -Wall -O2 -pthread -o 04_atomic_race 04_atomic_race.c
+./04_atomic_race
+```
+
+> 环境：2026-10-22 16:40:47 CST（Asia/Shanghai）；Linux 6.12.94+；gcc (Debian 14.2.0-19) 14.2.0  
+> `plain RMW` 的具体亏损数每次不同；`atomic_fetch_add` 应始终等于 expected。
+
+```text
+threads=16 iterations_each=2000000
+expected                  = 32000000
+plain RMW (racy)          = 2503832  (LOST UPDATES)
+atomic_fetch_add          = 32000000  (OK)
+```
+
+| Demo | 内核 |
+|---|---|
+| `plain_counter` 显式 RMW | 多 CPU 上普通 `++` 会丢更新 |
+| `atomic_fetch_add_explicit(..., memory_order_relaxed)` | `atomic_inc` / `atomic_add`（统计计数常用 relaxed 档） |
+| （本 demo 未演示） | 对象生命周期优先 `refcount_t`（见上文） |
+
+
 *下一节：自旋锁——不能睡、可关中断的短临界区。*

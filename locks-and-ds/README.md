@@ -20,6 +20,30 @@
 7. [RCU](./07-rcu.md)
 8. [观测、lockdep 与踩坑清单](./08-observability.md)
 
+
+## 可执行 Demo
+
+目录：[demos/](./demos/)（说明见 [demos/README.md](./demos/README.md)）。
+
+| Demo | 章节 | 类型 |
+|---|---|---|
+| `01_container_of.c` | 01 | 用户态，本机已验证 |
+| `02_list.c` | 02 | 用户态，本机已验证 |
+| `03_hash_hlist.c` | 03 | 用户态，本机已验证 |
+| `04_atomic_race.c` | 04 | 用户态，本机已验证 |
+| `kmod_list_example.c` | 02 | 内核模块**示例** |
+| `kmod_idr_example.c` | 03 | 内核模块**示例** |
+
+用户态一键：
+
+```bash
+cd locks-and-ds/demos
+gcc -Wall -O2 -o 01_container_of 01_container_of.c && ./01_container_of
+gcc -Wall -O2 -o 02_list 02_list.c && ./02_list
+gcc -Wall -O2 -o 03_hash_hlist 03_hash_hlist.c && ./03_hash_hlist
+gcc -Wall -O2 -pthread -o 04_atomic_race 04_atomic_race.c && ./04_atomic_race
+```
+
 ## 建议阅读顺序
 
 ```text
