@@ -1,0 +1,313 @@
+# 11. KVM 内存
+
+**结论**：guest 里的物理地址（GPA）不是宿主物理地址（HPA）。x86 上 EPT（Intel）或 NPT（AMD）是第二张页表，把 GPA 翻译成 HPA。这张表由 KVM 建，不是 guest 内核建的。guest 缺页先走 guest 自己的页表；EPT violation 是第二张表没有映射，处理在宿主。
+
+> 通用 memslot：`include/linux/kvm_host.h`。x86 MMU：`arch/x86/include/asm/kvm_host.h`、`arch/x86/kvm/mmu/`。
+> 导航：[上一节 回收](./10-reclaim.md) · [目录](./README.md) · [下一节 balloon/FPR](./12-balloon-fpr-and-overcommit.md)
+
+两套视角不要混：
+
+| | guest 看见的 | 宿主看见的 |
+|---|---|---|
+| 虚拟地址 | GVA，guest 进程的 | 宿主进程（qemu）的 HVA |
+| 「物理」地址 | GPA，guest 内核眼中的物理页 | 仍是某个 HVA，直到 EPT 把它钉到 HPA |
+| 缺页 | guest 的 `handle_mm_fault` | EPT violation / NPF → `kvm_mmu_page_fault` |
+| 大页 | guest THP / hugetlb | EPT 的页大小。两边独立 |
+
+---
+
+## 11.1 memslot：GPA 区间 ↔ 宿主用户地址
+
+qemu 用 `KVM_SET_USER_MEMORY_REGION` 登记一段 GPA。内核落成 `struct kvm_memory_slot`。
+
+`kvm_set_memory_region`：`virt/kvm/kvm_main.c:2001`。
+
+### `struct kvm_memory_slot`（`kvm_host.h:593`）全部成员
+
+| 成员 | 条件 | 中文 |
+|---|---|---|
+| `struct hlist_node id_node[2]` | 始终 | 按 slot id 哈希。两份是为了 generation 双缓冲：读者看旧的，写者改新的 |
+| `struct interval_tree_node hva_node[2]` | 始终 | 按宿主用户虚拟地址（HVA）的区间树节点，同样双份 |
+| `struct rb_node gfn_node[2]` | 始终 | 按 GFN 排序的红黑树节点，双份 |
+| `gfn_t base_gfn` | 始终 | 这段 GPA 的起始页帧号（GPA >> PAGE_SHIFT） |
+| `unsigned long npages` | 始终 | 页数。0 表示删除 slot |
+| `unsigned long *dirty_bitmap` | 始终 | 脏页位图。迁移时宿主问「guest 写过哪些 GPA」 |
+| `struct kvm_arch_memory_slot arch` | 始终 | 架构私有。x86 见下 |
+| `unsigned long userspace_addr` | 始终 | 对应的 HVA。qemu 进程里 `mmap` 出来的那块 |
+| `u32 flags` | 始终 | `KVM_MEM_LOG_DIRTY_PAGES`、`KVM_MEM_READONLY` 等 |
+| `short id` | 始终 | slot 号 |
+| `u16 as_id` | 始终 | 地址空间 id。SMM 是另一套 |
+| `struct file *file` | `CONFIG_KVM_GUEST_MEMFD`，嵌在 `gmem` 里 | guest_memfd。私有内存（保护虚拟机）不走普通用户页 |
+| `pgoff_t pgoff` | 同上 | 在 guest_memfd 里的偏移 |
+
+写 `gmem.file` 要 `kvm->slots_lock`。用 `kvm_gmem_get_file()` 拿引用时，`slots_lock` 或 `kvm->srcu` 都行（注释 `:608`）。
+
+### `struct kvm_memslots`（`kvm_host.h:753`）
+
+| 成员 | 中文 |
+|---|---|
+| `u64 generation` | 代际。改 slot 时加一，MMU 用它发现「我 fault-in 时用的 slot 已经过期」 |
+| `atomic_long_t last_used_slot` | 上次命中的 slot，热路径少搜树 |
+| `struct rb_root_cached hva_tree` | HVA 区间树的根 |
+| `struct rb_root gfn_tree` | GFN 树的根 |
+| `DECLARE_HASHTABLE(id_hash, 7)` | id → slot。7 位桶，注释说是为了 512 个 slot 的老数组大小和查找速度的折中 |
+| `int node_idx` | 节点索引，NUMA |
+
+查找：`gfn_to_memslot`（`kvm_host.h:1226`），vcpu 热路径 `kvm_vcpu_gfn_to_memslot`（`:1228`）。
+
+### x86 `struct kvm_arch_memory_slot`（`asm/kvm_host.h:1038`）
+
+| 成员 | 中文 |
+|---|---|
+| `struct kvm_rmap_head *rmap[KVM_NR_PAGE_SIZES]` | 反向映射。一个 GFN 被哪些影子 PTE 指着。TDP 直接映射不靠它做主路径，影子页表靠它 |
+| `struct kvm_lpage_info *lpage_info[KVM_NR_PAGE_SIZES - 1]` | 大页禁止信息。`disallow_lpage` 非 0 就不能在这一级建大页 |
+| `unsigned short *gfn_write_track` | 写跟踪计数。有人在盯这个 GFN 的写（模拟页表写）时不能用大页、也不能直接映射成可写 |
+
+`struct kvm_lpage_info`（`:1034`）只有 `int disallow_lpage`。
+
+`struct kvm_rmap_head`（`:424`）只有 `atomic_long_t val`。
+
+---
+
+## 11.2 两层 MMU：影子页表和 TDP
+
+| 模式 | 什么时候 | 谁翻译 GVA |
+|---|---|---|
+| 影子页表（shadow） | 硬件没有 EPT/NPT，或嵌套时 L2 的页表被 L0 影子化 | KVM 建的影子页表，硬件只走一张 |
+| TDP（two-dimensional paging） | EPT 或 NPT 打开。现代默认 | guest 自己的页表走 GVA→GPA；EPT/NPT 走 GPA→HPA |
+
+`struct kvm_mmu`（`asm/kvm_host.h:495`）是 vcpu 上的一套 MMU。`vcpu->arch.mmu` 指向当前用的那套；`root_mmu` 是 TDP/直接根，`guest_mmu` 是嵌套时 L2 的（`:765` 一带，字段在 `kvm_vcpu_arch` 里）。
+
+### `struct kvm_mmu` 全部成员
+
+| 成员 | 中文 |
+|---|---|
+| `int (*page_fault)(...)` | 缺页回调。TDP 时是 `kvm_tdp_page_fault` |
+| `int (*sync_spte)(...)` | 把影子 PTE 和 guest PTE 同步。TDP 直接映射基本不用 |
+| `struct kvm_pagewalk *w` | 当前分页模式的走表方法。见下 |
+| `struct kvm_mmu_root_info root` | 当前根。`pgd` 是 guest 侧根 GPA，`hpa` 是根页表的 HPA |
+| `hpa_t mirror_root_hpa` | 镜像根的 HPA。保护虚拟机 / TDX 用 |
+| `union kvm_mmu_page_role root_role` | 根页的角色。`direct == 1` 表示 TDP 直接映射，缺页地址已经是 GPA |
+| `struct kvm_mmu_root_info prev_roots[KVM_MMU_NUM_PREV_ROOTS]` | 以前的根，避免每次切 CR3 都拆掉。`KVM_MMU_NUM_PREV_ROOTS` 是 3（`:465`） |
+| `u64 *pae_root` | 32 位 PAE 的根 |
+| `u64 *pml4_root` | 4 级根 |
+| `u64 *pml5_root` | 5 级根 |
+| `struct kvm_page_format fmt` | 保留位、PKRU、权限位图 |
+
+`struct kvm_mmu_root_info`（`:457`）：`gpa_t pgd`，`hpa_t hpa`。无效值是两边都是 `INVALID_PAGE`（`:462`）。
+
+### `struct kvm_pagewalk`（`:481`）全部成员
+
+| 成员 | 中文 |
+|---|---|
+| `get_guest_pgd` | 取 guest CR3 |
+| `get_pdptr` | PAE 的 PDPT |
+| `inject_page_fault` | 向 guest 注入缺页 |
+| `gva_to_gpa` | 软件走 guest 页表 |
+| `union kvm_cpu_role cpu_role` | 当前 CPU 的角色，CR0/CR4/EFER 变了才重配 MMU |
+| `struct kvm_page_format fmt` | 和 `kvm_mmu.fmt` 同类的格式描述 |
+
+### `union kvm_mmu_page_role`（`:339`）
+
+整体是一个 `u32 word`，位域：
+
+| 位域 | 中文 |
+|---|---|
+| `level:4` | 这一页在第几级 |
+| `has_4_byte_gpte:1` | guest PTE 是 4 字节（32 位） |
+| `quadrant:2` | 32 位影子页把 4K 拆成象限 |
+| `direct:1` | 直接映射（TDP）。没有 guest 页表要影子化 |
+| `access:4` | 访问权限 |
+| `invalid:1` | 角色已失效 |
+| `efer_nx:1` | EFER.NXE |
+| `cr0_wp:1` | CR0.WP |
+| `smap_andnot_wp:1` | SMAP 且 WP=0 的组合 |
+| `ad_disabled:1` | 不用 A/D 位 |
+| `guest_mode:1` | 嵌套：这是 L2 |
+| `passthrough:1` | 穿透 |
+| `is_mirror:1` | 镜像页表 |
+| `cr4_smep:1` | CR4.SMEP。EPT MBEC 和 AMD GMET 也复用这一位，注释 `:356` 说明了原因 |
+| 填充 `:3` | 凑字节 |
+| `smm:8` | SMM。放在 word 的高位，方便一条移位取出。给了一整个字节 |
+
+`union kvm_mmu_extended_role`（`:396`）补页角色里没有、但换 CR 时要比较的位：`valid`、`execonly`、`cr4_pse`、`cr4_pke`、`cr4_smap`、`cr4_la57`、`efer_lma`、`has_pferr_fetch`。`valid` 用来区分「全 0」和「真的配过」。
+
+`union kvm_cpu_role`（`:416`）：`base` + `ext`，合成一个 `u64`。
+
+### `struct kvm_page_format`（`:437`）
+
+| 成员 | 中文 |
+|---|---|
+| `u64 rsvd_bits_mask[2][PT64_ROOT_MAX_LEVEL]` | 每一级 PTE 的保留位。guest 置了这些位就是保留位缺页。`PT64_ROOT_MAX_LEVEL` 是 5 |
+| `u64 bad_mt_xwr` | 非法的内存类型 × 权限组合 |
+| `u32 pkru_mask` | 保护键。16 个域，按缺页错误码的 [4:1] 索引 |
+| `u16 permissions[16]` | 权限检查位图。下标是错误码 [4:1]，bit 是 `ACC_*` 权限。置位表示这种组合算权限错 |
+
+---
+
+## 11.3 `struct kvm_mmu_page`（`mmu_internal.h:44`）
+
+一页影子页表或一页 TDP 页表。注释要求 `link` 到 `spt` 落在一条 64 字节 cache line 里。
+
+| 成员 | 条件 | 中文 |
+|---|---|---|
+| `struct list_head link` | 始终 | 活动页链表 |
+| `struct hlist_node hash_link` | 始终 | 按 (gfn, role) 哈希 |
+| `bool tdp_mmu_page` | 始终 | 这是 TDP MMU 的页，不是影子 MMU 的页 |
+| `bool unsync` | 始终 | 影子页和 guest 页表不一致，等 sync |
+| `u8 mmu_valid_gen` | 与下一个同 union | 代际。zapping 时整代作废 |
+| `bool tdp_mmu_scheduled_root_to_zap` | 同 union | 只在 `slots_lock` 下用。这个根已经排进去要拆 |
+| `bool nx_huge_page_disallowed` | 始终 | 因为 NX huge page 缓解，这一页不能被等价大页替换。它映射了 guest 的可执行页 |
+| `union kvm_mmu_page_role role` | 始终 | 哈希键的一半 |
+| `gfn_t gfn` | 始终 | 哈希键的另一半。这一页影子的是哪个 guest 页帧 |
+| `u64 *spt` | 始终 | 页表内容本身，512 个 64 位项 |
+| `u64 *shadowed_translation` | 始终 | 每个 SPTE 影子化的结果：高位是 GFN，低位是 KVM 格式的访问权限（`ACC_*`），不是 guest 原始格式。注释 `:77` |
+| `int root_count` | 与下一个同 union | 作为活动根的次数。非 TDP |
+| `refcount_t tdp_mmu_root_count` | 同 union | TDP 根的引用 |
+| `bool has_mapped_host_mmio` | 始终 | 映射了宿主 MMIO |
+| `unsigned int unsync_children` | 非 TDP 那一臂 | 下面有多少不同步的子页 |
+| `atomic_t write_flooding_count` | 同上 | 上次遍历以来被写的次数。写太频繁就拆掉这一级，避免模拟写页表的开销 |
+| `void *external_spt` | 与上面同 union | 外部页表（TDX 模块持有，KVM 不直接访问） |
+| `struct kvm_rmap_head parent_ptes` | 与 `ptep` 同 union | 哪些父 SPTE 指着这一页 |
+| `tdp_ptep_t ptep` | 同 union | TDP 页的父项指针 |
+| `unsync_child_bitmap` | 始终，512 bit | 哪个子项不同步 |
+| `struct list_head possible_nx_huge_page_link` | 始终 | 拆掉它就能再建 NX 大页的那些页。已经因为别的原因禁止大页的不在这条链上 |
+| `int clear_spte_count` | `CONFIG_X86_32` | 无锁读 SPTE 时的顺序计数 |
+| `struct rcu_head rcu_head` | `CONFIG_X86_64` | TDP 页异步释放 |
+
+---
+
+## 11.4 `struct tdp_iter`（`tdp_iter.h:83`）
+
+TDP MMU 走树的游标。不加「影子」那一层。
+
+| 成员 | 中文 |
+|---|---|
+| `gfn_t next_last_level_gfn` | 迭代器要走向的那个最后一级 GFN |
+| `gfn_t yielded_gfn` | 上次让出 CPU 时的 `next_last_level_gfn`。只有两者不同才让出，保证有进展 |
+| `tdp_ptep_t pt_path[PT64_ROOT_MAX_LEVEL]` | 从根走到当前项经过的页表 |
+| `tdp_ptep_t sptep` | 当前 SPTE 的指针 |
+| `gfn_t gfn` | 当前 SPTE 映射的最低 GFN（掩码位除外） |
+| `gfn_t gfn_bits` | 把 GFN 转成 GPA 时要或回去的位（保护虚拟机的 shared bit 一类） |
+| `int root_level` | 根的级别 |
+| `int min_level` | 最深走到哪一级。大页可以停在 2MB/1GB |
+| `int level` | 当前级别 |
+| `int as_id` | 地址空间，SMM 还是普通 |
+| `u64 old_spte` | `sptep` 上的值的快照 |
+| `bool valid` | 还没走出树 |
+| `bool yielded` | 中途放下过 `mmu_lock`。下次 `tdp_iter_next()` 要从根重走，不能顺着旧指针往下 |
+
+---
+
+## 11.5 `struct kvm_page_fault`（`mmu_internal.h:226`）
+
+一次缺页的全部输入输出。`kvm_mmu_do_page_fault` 在栈上填它（`mmu.c:4990`）。
+
+| 成员 | 中文 |
+|---|---|
+| `const gpa_t addr` | 出错地址。TDP 下是 GPA；影子模式下可能是 GVA，走完 guest 页表后另算 gfn |
+| `const u64 error_code` | 架构错误码，外加 KVM 合成位 |
+| `const bool prefetch` | 预取，不是真的 VM-exit |
+| `const bool exec` / `write` / `present` / `rsvd` / `user` | 从 error_code 拆出来的 |
+| `const bool is_tdp` | `mmu->page_fault == kvm_tdp_page_fault` |
+| `const bool is_private` | 私有内存（`PFERR_PRIVATE_ACCESS`） |
+| `const bool nx_huge_page_workaround_enabled` | 是否在做 NX 大页缓解 |
+| `bool huge_page_disallowed` | 这一次不许建 >4KB |
+| `u8 max_level` | 允许的最大页（给 `kvm_tdp_mmu_map` / `direct_map`） |
+| `u8 req_level` | 结合宿主映射页大小之后想建的级别 |
+| `u8 goal_level` | 再扣掉 `huge_page_disallowed` 之后真正要建的级别 |
+| `gfn_t gfn` | 页帧。TDX 一类多别名时，选别名的那个 bit 不在 gfn 里，留在 `addr` |
+| `struct kvm_memory_slot *slot` | `gfn` 所在 slot。可以是 NULL（MMIO） |
+| `unsigned long mmu_seq` | fault-in 时的 memslot generation，用来发现过期 |
+| `kvm_pfn_t pfn` | `kvm_mmu_faultin_pfn` 的输出。初始 `KVM_PFN_ERR_FAULT` |
+| `struct page *refcounted_page` | 拿了引用的宿主页 |
+| `bool map_writable` | 宿主页可写，EPT 才能建成可写 |
+| `bool write_fault_to_shadow_pgtable` | guest 在写自己的页表。模拟这条写，不能当成普通数据写 |
+
+返回值（`:312`）：`RET_PF_CONTINUE`（0）、`RETRY`、`EMULATE`、`WRITE_PROTECTED`、`INVALID`、`FIXED`、`SPURIOUS`。新增名字要在 `mmutrace.h` 里 `TRACE_DEFINE_ENUM` 导出。
+
+---
+
+## 11.6 guest 缺页 → EPT violation
+
+guest 里一次写匿名页，其实是两次翻译：
+
+```text
+guest 用户态写 GVA
+  → guest 页表没有映射
+  → guest 内核 handle_mm_fault，分配 guest 「物理页」
+  → 这条 GPA 在 EPT 里还没有
+  → VM-exit：EPT violation
+
+Intel：
+  handle_ept_violation                         # vmx/vmx.c:5972
+    读 VMCS 的 GPA 和 exit qualification
+    trace_kvm_page_fault
+    __vmx_handle_ept_violation                 # vmx/common.h:83
+      把 EPT_VIOLATION_ACC_* 收成 PFERR_* error_code
+      kvm_mmu_page_fault                       # mmu.c:6573
+
+AMD：
+  npf_interception                             # svm/svm.c:1968
+    exit_info_2 是 GPA，exit_info_1 是错误码
+    kvm_mmu_page_fault                         # :2019
+
+kvm_mmu_page_fault
+  保留位错：handle_mmio_page_fault             # MMIO 走模拟
+  否则 kvm_mmu_do_page_fault                   # :4986
+    填 struct kvm_page_fault
+    direct 角色：gfn = gpa_to_gfn，去掉 shared bit
+              slot = kvm_vcpu_gfn_to_memslot
+    retpoline 且 is_tdp：直接 kvm_tdp_page_fault   # :4976
+    否则 mmu->page_fault()
+
+kvm_tdp_page_fault
+  tdp_mmu_enabled → kvm_tdp_mmu_page_fault     # :4941
+  否则 direct_page_fault                       # 老的 TDP，仍是直接映射但不是 TDP MMU
+
+kvm_tdp_mmu_page_fault
+  page_fault_handle_page_track                 # 有人在跟踪写，就写保护
+  fast_page_fault                              # 只把已有 SPTE 的 W 位打开，不走慢路径
+  mmu_topup_memory_caches                      # 准备分配页表页的 cache
+  kvm_mmu_faultin_pfn                          # 关键：把 GPA 变成宿主 PFN
+       通过 memslot 找到 HVA
+       对 qemu 的用户页做 GUP / 缺页
+       这一步会进宿主的 handle_mm_fault
+  read_lock(kvm->mmu_lock)
+  is_page_fault_stale ? 重试 : kvm_tdp_mmu_map # 用 tdp_iter 把 PFN 装进 EPT
+```
+
+`kvm_mmu_faultin_pfn` 是两层交汇点。guest 觉得自己缺的是 GPA；宿主在这里缺的是 qemu 进程的匿名页或 hugetlb 页。宿主页如果还没分配，你会在宿主上看到普通的 minor fault，同时 guest 停在 EPT violation 里。
+
+宿主用 4KB 映射时，guest 的 2MB 大页在 EPT 里通常也只能建成 4KB（`req_level` 受宿主页大小限制，见 `kvm_page_fault` 的注释 `:256`）。要 EPT 大页，宿主侧那一段也得是大页：hugetlb 或 THP，并且对齐。
+
+---
+
+## 11.7 嵌套
+
+L2 的 GPA（从 L0 看是 nGPA）要先翻译成 L1 的 GPA，再翻译成 HPA。TDP 只解决最后一跳时，中间那跳仍可能是影子页表。`kvm_mmu.page_fault` 在嵌套时不一定是 `kvm_tdp_page_fault`，`is_tdp` 的判断就是比较函数指针（`mmu.c:4999`）。
+
+本环境没有 KVM（云端 box，`/dev/kvm` 未作为实验对象打开）。嵌套、EPT 大页、balloon 与 EPT 的交互都标 RECIPE，步骤在 [12](./12-balloon-fpr-and-overcommit.md) 和 [14](./14-perf-and-dev-practice.md)。不要在没有 `/dev/kvm` 的机器上编一套「我跑过」的数字。
+
+---
+
+## 11.8 关键函数表
+
+| 符号 | 位置 | 作用 |
+|---|---|---|
+| `kvm_set_memory_region` | `virt/kvm/kvm_main.c:2001` | 安装 / 删除 memslot |
+| `gfn_to_memslot` | `include/linux/kvm_host.h:1226` | GFN → slot |
+| `kvm_vcpu_gfn_to_memslot` | `:1228` | vcpu 热路径 |
+| `handle_ept_violation` | `arch/x86/kvm/vmx/vmx.c:5972` | Intel EPT violation |
+| `__vmx_handle_ept_violation` | `arch/x86/kvm/vmx/common.h:83` | 错误码转换后进 MMU |
+| `npf_interception` | `arch/x86/kvm/svm/svm.c:1968` | AMD NPT |
+| `kvm_mmu_page_fault` | `arch/x86/kvm/mmu/mmu.c:6573` | MMU 总入口 |
+| `kvm_mmu_do_page_fault` | `:4986` | 填 `kvm_page_fault` 并分发 |
+| `kvm_tdp_page_fault` | `:4976` | TDP |
+| `kvm_tdp_mmu_page_fault` | `:4941` | TDP MMU |
+| `kvm_tdp_mmu_map` | `arch/x86/kvm/mmu/tdp_mmu.c:1217` | 把 PFN 写入 EPT。`kvm_tdp_mmu_page_fault` 在 `:4967` 调用它 |
+| `kvm_mmu_faultin_pfn` | `arch/x86/kvm/mmu/mmu.c:4694` | HVA 缺页，拿到 PFN。调用点在 `:4957` |
+
+---
+
+[上一节 回收](./10-reclaim.md) · [目录](./README.md) · [下一节 balloon/FPR](./12-balloon-fpr-and-overcommit.md)
