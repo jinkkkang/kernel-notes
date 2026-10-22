@@ -1,0 +1,56 @@
+=== uname ===
+Linux grok-bot-vm-477963022 6.12.94+ #1 SMP PREEMPT_DYNAMIC Mon Oct 19 19:23:48 UTC 2026 x86_64 GNU/Linux
+=== date Asia/Shanghai ===
+2026-10-22 20:27:10 CST (Asia/Shanghai)
+=== nproc / lscpu summary ===
+8
+Architecture:                            x86_64
+CPU(s):                                  8
+Model name:                              Intel(R) Xeon(R) Processor
+Thread(s) per core:                      1
+Core(s) per socket:                      8
+Socket(s):                               1
+=== /proc/sched_debug exists? ===
+ls: cannot access '/proc/sched_debug': No such file or directory
+=== /proc/schedstat head ===
+head: cannot open '/proc/schedstat' for reading: No such file or directory
+=== self /proc/75672/sched (first 35) ===
+=== pid1 sched head ===
+=== tracing events sched ===
+ls: cannot access '/sys/kernel/debug/tracing/events/sched/': Permission denied
+=== available_filter_functions sched_switch? ===
+ls: cannot access '/sys/kernel/tracing/events/sched/': Permission denied
+=== tools ===
+--: line 57: perf: command not found
+--: line 57: bpftrace: command not found
+=== PSI cpu ===
+some avg10=0.00 avg60=0.01 avg300=0.29 total=37593969
+full avg10=0.00 avg60=0.00 avg300=0.00 total=0
+=== cgroup cpu.pressure root ===
+some avg10=0.00 avg60=0.01 avg300=0.29 total=37593969
+full avg10=0.00 avg60=0.00 avg300=0.00 total=0
+
+=== measured vs unavailable (box) ===
+MEASURED: uname, nproc=8, PSI /proc/pressure/cpu, /sys/fs/cgroup/cpu.pressure
+UNAVAILABLE on this box: /proc/sched_debug (CONFIG_SCHED_DEBUG=n), /proc/schedstat (CONFIG_SCHEDSTATS=n), /proc/<pid>/sched (needs SCHED_DEBUG), perf, bpftrace, debugfs tracing (permission denied)
+BOX_KERNEL=6.12.94+
+NOTES_PIN=v7.3 VERSION=7.3.0 (commit c03c1a14507d per prior notes)
+CAPTURE_TIME=2026-10-22 20:27:33 CST
+
+=== /proc/stat cpu summary (jiffies) ===
+cpu  123641 0 58223 7647829 8176 0 16174 1205 0 0
+=== /proc/loadavg ===
+0.17 0.52 0.44 1/786 76145
+=== /proc/self/stat fields of interest (utime/stime/cutime/cstime/priority/nice/num_threads/starttime/vsize/rss/processor) ===
+pid=76146 comm=(awk) state=R utime=0 stime=0 priority=20 nice=0 num_threads=1 starttime=991249 processor=5
+=== cgroup cpu controllers (root) ===
+/sys/fs/cgroup/cpu.pressure
+/sys/fs/cgroup/cpu.stat
+/sys/fs/cgroup/cpu.stat.local
+-- cpu.weight --
+(missing)
+-- cpu.max --
+(missing)
+-- cpu.pressure --
+some avg10=0.00 avg60=0.00 avg300=0.26 total=37609181
+full avg10=0.00 avg60=0.00 avg300=0.00 total=0

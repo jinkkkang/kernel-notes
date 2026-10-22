@@ -1,0 +1,10 @@
+#!/usr/bin/env bpftrace
+/* RECIPE: sched_switch counts by prev_state (coarse)
+ * prev_state==0 => typically preempt / still runnable
+ * non-zero => voluntary sleep-ish (see task states)
+ */
+tracepoint:sched:sched_switch
+{
+	@by_prev_state[args->prev_state] = count();
+	@switches = count();
+}
