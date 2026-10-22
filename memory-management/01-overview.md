@@ -102,14 +102,22 @@ flowchart TD
 | `include/linux/mm_types.h` | `page`、`folio`、`vm_area_struct`、`mm_struct` |
 | `include/linux/mmzone.h` | `zone`、`pglist_data`、`zonelist`、`mem_section`、MGLRU |
 | `mm/page_alloc.c` | buddy |
+| `mm/mempolicy.c`、`include/linux/mempolicy.h` | NUMA 策略、`mbind` |
+| `mm/cma.c` | CMA |
 | `mm/slub.c`、`mm/slab.h` | SLUB |
+| `mm/page_frag_cache.c` | page frag |
 | `mm/vmalloc.c` | vmalloc |
-| `mm/mmap.c`、`mm/vma.c` | `mmap` / `munmap` / `brk` |
+| `mm/mmap.c`、`mm/vma.c`、`mm/rmap.c` | `mmap` / `munmap` / `brk`，反向映射 |
+| `mm/mmu_gather.c`、`include/asm-generic/tlb.h` | TLB 批量刷新 |
 | `mm/memory.c` | 缺页 |
-| `mm/filemap.c`、`mm/page-writeback.c` | 页缓存与脏页 |
-| `mm/vmscan.c`、`mm/oom_kill.c` | 回收与 OOM |
+| `mm/filemap.c`、`mm/page-writeback.c`、`mm/shmem.c` | 页缓存、脏页、shmem |
+| `mm/vmscan.c`、`mm/oom_kill.c`、`mm/zswap.c` | 回收、OOM、zswap |
+| `mm/migrate.c`、`mm/mlock.c`、`mm/memory_hotplug.c` | 迁移、mlock、热插拔 |
+| `include/linux/mmu_notifier.h`、`mm/hmm.c` | mmu_notifier、HMM |
 | `arch/x86/kvm/mmu/` | TDP MMU / shadow MMU |
 | `mm/page_reporting.c`、`drivers/virtio/virtio_balloon.c` | FPR 与 balloon |
+| `mm/ksm.c`、`mm/damon/core.c` | KSM、DAMON |
+| `mm/page_owner.c`、`mm/alloc_tag.c` | 分配栈与 allocinfo |
 
 ---
 

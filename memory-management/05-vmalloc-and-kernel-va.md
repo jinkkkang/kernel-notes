@@ -91,7 +91,63 @@ vmap(pages, count, flags, prot)            # :3559
 
 ---
 
-## 5.6 关键函数表
+## 5.6 highmem 与 `kmap_local_page`
+
+**结论**：highmem 是 32 位机上「物理页在内核直接映射窗口之外」的那一段。要读写它的内容，得临时借一个内核虚拟地址。x86-64 的物理内存都在直接映射里，`PageHighMem` 为假，`kmap_local_page` 就是 `page_address`。
+
+`include/linux/highmem-internal.h` 按 `CONFIG_HIGHMEM` 给了两套。
+
+开了 HIGHMEM 时（`:71`）：
+
+```c
+static inline void *kmap_local_page(const struct page *page)
+{
+	return __kmap_local_page_prot(page, kmap_prot);
+}
+```
+
+`__kmap_local_page_prot` 在每个 CPU 的临时窗口里建一条映射。窗口是栈式的：后 map 的必须先 `kunmap_local`。不能拿着这个指针睡觉，不能把指针交给别的 CPU，不能在中断里假设进程上下文的 kmap 还在。`kmap_local_folio`（`:84`）在页内再加上 `offset % PAGE_SIZE`。
+
+老的 `kmap` / `kmap_atomic` 还在。`kmap_atomic`（`:116`）在 local 映射之外再 `preempt_disable`（PREEMPT_RT 上是 `migrate_disable`）并 `pagefault_disable`。新代码用 `kmap_local_page`，不要再写 `kmap_atomic`。
+
+没开 HIGHMEM 时（`:163` 的 `#else`，x86-64 走这里）：
+
+```c
+static inline void *kmap_local_page(const struct page *page)
+{
+	return page_address(page);   /* :186，直接映射，没有临时窗口 */
+}
+```
+
+`kmap`（`:170`）同样返回 `page_address`。`kmap_local_page_try_from_panic` 在 HIGHMEM 配置下对高端页返回 NULL（`:76`，panic 路径不能再去建映射）；非 HIGHMEM 配置下仍是 `page_address`（`:191`）。
+
+所以在 x86-64 上看到 `kmap_local_page`，把它读成「拿到这页的内核虚拟地址，并且写成和 32 位同一套调用形式」。不要在 x86-64 的代码里为 highmem 预留 PKMAP 窗口。
+
+---
+
+## 5.7 vmalloc 内核栈
+
+**结论**：`CONFIG_VMAP_STACK` 把内核栈放进 vmalloc 区，栈底（或栈顶，看架构增长方向）外侧是 vmalloc 自带的 guard page。溢出立刻缺页，而不是悄悄改写相邻栈。x86 在 `HAVE_ARCH_VMAP_STACK` 之内，文档 `Documentation/mm/vmalloced-kernel-stacks.rst` 列了 arm64、powerpc、riscv、s390、um、x86。
+
+`dup_task_struct`（`kernel/fork.c:915`）调用 `alloc_thread_stack_node`（`:930`）。`CONFIG_VMAP_STACK` 下的实现（`:333`）：
+
+```text
+alloc_thread_stack_node
+  → alloc_thread_stack_node_from_cache   # :338，CPU 下线时缓存过的 vm 栈
+  → 没有缓存：__vmalloc_node(THREAD_SIZE, THREAD_ALIGN, GFP_VMAP_STACK, ...)  # :359
+       GFP_VMAP_STACK = GFP_KERNEL | __GFP_ZERO | __GFP_SKIP_KASAN   # :208
+  → find_vm_area，记到 tsk->stack_vm_area
+```
+
+guard page 来自 vmalloc 划虚拟区间时留的那一页（[5.4](#54-分配路径)），不是栈内容里的魔数。`set_task_stack_end_magic`（`fork.c:907`）另在栈底写 `STACK_END_MAGIC`，用来在溢出发生后确认「这块栈被踩过」。魔数抓不到所有溢出；guard page 才能在写越界的那一条指令上故障。
+
+`/proc/meminfo` 的 `KernelStack` 是 `NR_KERNEL_STACK_KB`（`fs/proc/meminfo.c:111`），按栈占用的页记账，不含 guard page 本身（guard 没有 `struct page` 的用户数据）。
+
+没开 `CONFIG_VMAP_STACK` 时，`alloc_thread_stack_node` 是同文件 `:410` 或 `:444` 的另一套实现，直接从页分配器拿连续页，没有 guard page。溢出的表现回到「踩邻栈」。
+
+---
+
+## 5.8 关键函数表
 
 | 符号 | 位置 | 作用 |
 |---|---|---|
@@ -107,6 +163,10 @@ vmap(pages, count, flags, prot)            # :3559
 | `vmalloc_to_page` | `mm.h:1885` | vmalloc 地址 → `struct page` |
 | `vfree` | `mm/vmalloc.c:3484` | 释放。可以在中断上下文调用，拆页表会延后 |
 | `__kvmalloc_node_noprof` | `mm/slub.c:7000` | 先 kmalloc 再 vmalloc |
+| `kmap_local_page` | `highmem-internal.h:71`（HIGHMEM）/ `:186`（否则） | 临时内核映射，或直接 `page_address` |
+| `kmap_local_folio` | `:84` / `:196` | folio 内偏移 |
+| `alloc_thread_stack_node` | `kernel/fork.c:333`（VMAP_STACK） | 内核栈，vmalloc + guard |
+| `__vmalloc_node` | 由 `fork.c:359` 调用 | vmap 栈的物理+虚拟分配 |
 
 ---
 

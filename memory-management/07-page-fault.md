@@ -114,9 +114,25 @@ else
 - **missing**：PTE 还没有。qemu postcopy、Criu 用它把缺页转成用户态协议。
 - **wp（write-protect）**：页在，但写成只读。`handle_pte_fault` 里 `userfaultfd_pte_rwp` 为真时进 `do_uffd_rwp`，而不是 `do_numa_page`（`:6569`）。
 
-内核填页的 ioctl 在同一文件（`UFFDIO_COPY` / `UFFDIO_ZEROPAGE` 等，常量在 `include/uapi/linux/userfaultfd.h`）。本章不写 ioctl 参数表。权威说明是 `Documentation/admin-guide/mm/userfaultfd.rst`。
+内核填页的 ioctl 全在 `userfaultfd_ioctl`（`mm/userfaultfd.c:4685`）。`UFFDIO_API` 之外的命令要求上下文已经初始化。分发：
 
-和 KVM 的关系：postcopy 迁移时，guest 碰尚未从源端拉来的页，宿主缺页进 uffd，用户态再把页填上。EPT 那一层见 [11](./11-kvm-memory.md)。
+| ioctl | 处理函数 | 做什么 |
+|---|---|---|
+| `UFFDIO_API` | `userfaultfd_api` | 协商特性 |
+| `UFFDIO_REGISTER` / `UNREGISTER` | `userfaultfd_register`（`:3718`）/ `userfaultfd_unregister` | 把范围记进或摘出 `vma->vm_userfaultfd_ctx` |
+| `UFFDIO_WAKE` | `userfaultfd_wake` | 叫醒等在这个范围上的缺页 |
+| `UFFDIO_COPY` | `userfaultfd_copy` | 从用户缓冲拷进缺页的地址 |
+| `UFFDIO_ZEROPAGE` | `userfaultfd_zeropage` | 用零页填 |
+| `UFFDIO_MOVE` | `userfaultfd_move` | 把已有页移进来 |
+| `UFFDIO_WRITEPROTECT` | `userfaultfd_writeprotect` | 装上/拿掉写保护 |
+| `UFFDIO_CONTINUE` | `userfaultfd_continue` | minor fault：页已经在页缓存，继续往下装 PTE |
+| `UFFDIO_POISON` | `userfaultfd_poison` | 把这段标成 hwpoison |
+| `UFFDIO_RWPROTECT` | `userfaultfd_rwprotect` | 读写保护 |
+| `UFFDIO_SET_MODE` | `userfaultfd_set_mode` | 切模式 |
+
+参数布局在 `include/uapi/linux/userfaultfd.h`，这里不抄结构体。权威说明是 `Documentation/admin-guide/mm/userfaultfd.rst`。
+
+和 KVM 的关系：postcopy 迁移时，guest 碰尚未从源端拉来的页，宿主缺页进 uffd，用户态再 `UFFDIO_COPY` 把页填上。EPT 那一层见 [11](./11-kvm-memory.md)。
 
 ---
 
@@ -138,7 +154,33 @@ else
 
 ---
 
-## 7.6 关键函数表
+## 7.6 hwpoison
+
+**结论**：硬件报告某一页损坏时，`memory_failure` 尽量把这一页从用户映射里摘掉，该杀的进程发 SIGBUS，而不是让后面的读把坏数据当好数据用。恢复关着（`sysctl_memory_failure_recovery == 0`）就直接 panic。
+
+入口 `memory_failure(pfn, flags)`（`mm/memory-failure.c:2386`）。返回值注释在函数上方：`-ENXIO` 内核不管理这块，`-EOPNOTSUPP` 被 `hwpoison_filter` 滤掉，`-EHWPOISON` 这页已经毒过（可能已经杀进程），其它负数是失败。
+
+```text
+sysctl_memory_failure_recovery == 0 → panic
+mutex_lock(&mf_mutex)
+pfn_to_online_page 失败：
+  arch_memory_failure，或 pfn 无效时 memory_failure_pfn
+get_hwpoison_page                         # :1550，先把这页的引用拿稳
+  0 且在 buddy 上：take_page_off_buddy，记 MF_RECOVERED
+  -ENOTRECOVERABLE：PG_reserved / slab / 页表 / large-kmalloc，MF_IGNORED
+hwpoison_filter 命中：清 PG_hwpoison，返回 -EOPNOTSUPP
+大 folio：folio_set_has_hwpoisoned，try_to_split_thp_page
+  拆不开：kill_procs_now，MF_MSG_UNSPLIT_THP
+shake_folio，然后 hwpoison_user_mappings   # :1624
+```
+
+`hwpoison_user_mappings` 先 `collect_procs`（`:1654`）。匿名、文件、ksm 各有一份收集（`collect_procs` 本体在 `:664`）。必须在 `try_to_unmap` 之前做，因为 unmap 会把 rmap 拆掉。真正拆映射的是 `unmap_poisoned_folio`（`:1568`）：`TTU_IGNORE_MLOCK | TTU_SYNC | TTU_HWPOISON`，把 PTE 换成 hwpoison 项，而不是普通 swap 项。干净页可以丢掉不杀；脏页要 SIGBUS，因为用户可能已经写过、数据丢了。`kill_procs` 在 `:462`，单个进程走 `kill_proc`（`:286`）。
+
+`/proc/meminfo` 的 `HardwareCorrupted` 对应各 node `memory_failure_stats` 的合计，[02](./02-physical-layout.md) 的 `pg_data_t` 里有这个字段。软下线（还没出错、提前把页迁走）是另一条，入口不在 `memory_failure` 里，不要把两者的计数加在一起解读。
+
+---
+
+## 7.7 关键函数表
 
 | 符号 | 位置 | 作用 |
 |---|---|---|
@@ -158,6 +200,11 @@ else
 | `hugetlb_fault` | `mm/hugetlb.c:6013` | 大页 |
 | `userfaultfd` 系统调用 | `mm/userfaultfd.c:4841` | 创建 uffd |
 | `userfaultfd_register` | `mm/userfaultfd.c:3718` | 注册范围 |
+| `userfaultfd_ioctl` | `mm/userfaultfd.c:4685` | COPY / ZEROPAGE / MOVE / POISON 等 |
+| `memory_failure` | `mm/memory-failure.c:2386` | 硬件坏页 |
+| `hwpoison_user_mappings` | `:1624` | 摘用户映射并发 SIGBUS |
+| `unmap_poisoned_folio` | `:1568` | `TTU_HWPOISON` 拆 PTE |
+| `get_hwpoison_page` | `:1550` | 为处理坏页拿引用 |
 
 ---
 

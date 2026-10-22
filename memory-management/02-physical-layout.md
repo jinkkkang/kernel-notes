@@ -159,6 +159,8 @@
 
 小 folio 不会去碰第二页以后的字段。把 order-0 folio 当成多页结构去写 `_deferred_list`，就是踩别的页的 `struct page`。
 
+成员表上面已经列全。`_refcount` 和 `_mapcount` 是两本账，get/put 规则见 [2.9](#29-folio-的-refcount-与-mapcount)。
+
 ---
 
 ## 2.3 node：`pg_data_t` / `struct pglist_data`（`mmzone.h:1478`）
@@ -373,7 +375,7 @@
 
 `CONFIG_SPARSEMEM_EXTREME` 时 `mem_section` 是二级指针（`:2048`），根的大小按页算：`SECTIONS_PER_ROOT = PAGE_SIZE / sizeof(struct mem_section)`。否则是二维数组。
 
-FLATMEM 的 `mem_map` 仍声明着（`:1443`），因为有的配置两边都编译到。x86-64 服务器看 sparsemem 就够。
+FLATMEM 的 `mem_map` 仍声明着（`:1443`），因为有的配置两边都编译到。x86-64 服务器看 sparsemem 就够。三种模型下 PFN 怎么变成 `struct page`，见 [2.8](#28-pfn_to_page三种模型)。
 
 ---
 
@@ -398,7 +400,142 @@ FLATMEM 的 `mem_map` 仍声明着（`:1443`），因为有的配置两边都编
 
 ---
 
-## 2.8 关键函数表
+## 2.8 `pfn_to_page`：三种模型
+
+**结论**：`pfn_to_page` 不是一个函数。`include/asm-generic/memory_model.h:74` 把它定义成 `__pfn_to_page`，而 `__pfn_to_page` 按编译期的内存模型三选一。x86-64 服务器默认走 `CONFIG_SPARSEMEM_VMEMMAP`：PFN 就是 vmemmap 数组的下标。
+
+`struct mem_section` 的成员表在 [2.6](#26-sparsememstruct-mem_section)，这里不重复。
+
+三种展开（同一文件，互斥）：
+
+```c
+/* FLATMEM，memory_model.h:18。一张 mem_map[]，PFN 减 ARCH_PFN_OFFSET 做下标 */
+#define __pfn_to_page(pfn)	(mem_map + ((pfn) - ARCH_PFN_OFFSET))
+
+/* SPARSEMEM_VMEMMAP，:46。vmemmap 在虚拟地址上连续，PFN 直接当下标 */
+#define __pfn_to_page(pfn)	(vmemmap + (pfn))
+
+/* 经典 SPARSEMEM（没有 VMEMMAP），:60。先找 section，再加 PFN */
+#define __pfn_to_page(pfn)				\
+({	unsigned long __pfn = (pfn);			\
+	struct mem_section *__sec = __pfn_to_section(__pfn);	\
+	__section_mem_map_addr(__sec) + __pfn;		\
+})
+```
+
+经典 SPARSEMEM 那条能成立，是因为 `section_mem_map` 存的不是数组起点，而是「数组地址减去该 section 的起始 PFN」（文件注释 `:50-52`）。加上 PFN 之后，section 内的偏移自动对齐。低位标志要用 `__section_mem_map_addr`（`mmzone.h:2112`）清掉，[2.6](#26-sparsememstruct-mem_section) 写过。
+
+`page_to_pfn` 是反向的三条（`:19`、`:47`、`:54`）。带 `CONFIG_DEBUG_VIRTUAL` 时 `page_to_phys`（`:77`）会 `WARN_ON_ONCE(!pfn_valid)`。
+
+vmemmap 本身要先被填上页表。`vmemmap_populate_basepages`（`mm/sparse-vmemmap.c:296`）只是转去 `vmemmap_populate_range(..., order=-1)`，按 base page 把 `[start, end)` 这段 `struct page` 虚拟地址铺出来。大页映射走 `vmemmap_populate_hugepages`（同文件 `:404`）。HVO 是铺完之后再把 hugetlb 的尾部 `struct page` 指到同一份，见 [09](./09-thp-and-hugetlb.md)。
+
+x86-64 的 `vmemmap` 符号就是 `vmemmap_base` 上的那片（[2.7](#27-x86-64-虚拟布局点到为止)）。KASLR 会挪基址，公式不变：`page = vmemmap + pfn`。
+
+---
+
+## 2.9 folio 的 refcount 与 mapcount
+
+**结论**：`folio` 是为了让「一次分配的那一整块」有一个句柄。order-0 时它和 `struct page` 重叠；高阶时头页代表整块，tail 不再各自算一笔分配。`_refcount` 回答「谁还抓着这块内存」，`_mapcount` 回答「有多少用户页表项指着它」。两本账不能互相代替。
+
+成员表在 [2.2](#22-struct-folio-mm_typesh404)，这里只讲语义。引入 folio 之前，复合页用 `PageHead`/`PageTail` 和 `compound_head()` 到处找头页，tail 上的计数容易和头页搞混。folio 把分配单位收成一个类型：`folio_nr_pages()` 是这块有几页，引用和映射都记在头上。
+
+`page_ref.h:91-100` 把 refcount 拆成三份，读代码时对得上：
+
+| 成分 | 是什么 |
+|---|---|
+| expected | 代码路径上说得清的持有者：页表一项、页缓存、LRU、文件系统私有数据、pipe、直接 IO |
+| temporary | 某条路径临时 `folio_get`，防止自己用的时候这块被还回分配器 |
+| spurious | RCU 扫页表或页缓存拿到的过期指针。发现过期后会 put，但刚分配出来的 folio 可能短暂看到 2 而不是 1 |
+
+规则：
+
+- 已经持有引用，才能 `folio_get`（`mm.h:2119`）。它只做 `folio_ref_inc`。refcount 已经是 0 或接近溢出时 `VM_BUG_ON`。
+- 手里没有引用（LRU 隔离、RCU 遍历），用 `folio_try_get`（`page_ref.h:274`）。它是 `folio_ref_add_unless_zero`：refcount 已经是 0（frozen，正在拆分、迁移或释放）就失败，不能把死页救活。
+- `folio_put`（`mm.h:2157`）减到 0 就进 `__folio_put`，通常还回分配器。注释写明可以在持有自旋锁时调用。
+- `page_ref_count`（`page_ref.h:65`）是 `atomic_read(&page->_refcount)`。`folio_ref_count`（`:105`）读的是头页。`page_count()`（`:110`）先 `page_folio()` 再读 folio 的引用，不要拿 tail 的 `_refcount` 当整块的引用。
+- 页表里每条指向这块的用户 PTE/PMD/PUD，必须配恰好一次 folio 引用（`folio_mapcount` 的注释，`mm.h:1931-1933`）。unmap 拆 PTE 时丢掉的是映射，引用要另 put。
+
+mapcount 的读法（`mm.h:1947`）：
+
+```c
+static inline int folio_mapcount(const struct folio *folio)
+{
+	int mapcount;
+	if (likely(!folio_test_large(folio))) {
+		/* 小 folio：_mapcount 初值 -1，所以 +1 才是真正的映射次数 */
+		mapcount = atomic_read(&folio->_mapcount) + 1;
+		if (page_mapcount_is_type(mapcount))
+			mapcount = 0;   /* typed folio 不走 rmap，映射次数当 0 */
+		return mapcount;
+	}
+	return folio_large_mapcount(folio); /* 大 folio 读 _large_mapcount + 1 */
+}
+```
+
+普通 folio 上，每条用户页表项算一次。hugetlb 上，一条「抽象的 hugetlb 页表项」算一次，哪怕它在硬件上拆成多条普通 PTE（注释 `:1938-1940`）。slab、页表页这些不能映射进用户空间的，mapcount 报 0。
+
+`_entire_mapcount` 是整块被一条 PMD/PUD 映射的次数，调试和拆大页用，不是 `folio_mapcount()` 的返回值。`mlock_count` 是 unevictable 槽上的锁页计数，和 mapcount 也不是一回事，见 [10](./10-reclaim.md)。
+
+拿到 folio 之后如果要改页表，还要页表锁。引用只保证这块 `struct page` 不会被释放，不保证 PTE 还指着它。
+
+---
+
+## 2.10 memblock：buddy 醒来之前
+
+**结论**：启动早期没有 buddy、没有 slab。可用内存和已保留内存都记在 `struct memblock` 里。内核自己的早期分配走 `memblock_phys_alloc_range` 这一类，从 `memory` 里挖、记进 `reserved`。buddy 接盘之后，这套表可以丢掉（`memblock_discard`），除非 `CONFIG_ARCH_KEEP_MEMBLOCK`。
+
+`include/linux/memblock.h`。
+
+`struct memblock_region`（`:75`）：
+
+| 成员 | 条件 | 中文 |
+|---|---|---|
+| `phys_addr_t base` | 始终 | 区域物理基址 |
+| `phys_addr_t size` | 始终 | 长度 |
+| `enum memblock_flags flags` | 始终 | 见下 |
+| `int nid` | `CONFIG_NUMA` | 这块属于哪个 node |
+
+`memblock_flags`（`:56`）：`MEMBLOCK_NONE`、`HOTPLUG`（可热插拔）、`MIRROR`、`NOMAP`（不要做内核直接映射）、`DRIVER_MANAGED`（驱动报上来的，固件内存图里没有）、`RSRV_NOINIT`（保留区，`struct page` 没完全初始化）、`RSRV_KERN`（内核自己留的；分配 API 都会打上）、`KHO_SCRATCH`（kexec handover 的 scratch，早期只能从这里分）、`RSRV_HUGETLB`。
+
+`struct memblock_type`（`:92`）：
+
+| 成员 | 中文 |
+|---|---|
+| `unsigned long cnt` | 当前有多少个 region |
+| `unsigned long max` | `regions` 数组的容量 |
+| `phys_addr_t total_size` | 全部 region 的尺寸和 |
+| `struct memblock_region *regions` | region 数组 |
+| `char *name` | `"memory"` 或 `"reserved"` 这类名字 |
+
+`struct memblock`（`:107`）四个成员：
+
+| 成员 | 中文 |
+|---|---|
+| `bool bottom_up` | 自低地址往高地址分 |
+| `phys_addr_t current_limit` | 当前允许分配到的物理地址上限 |
+| `struct memblock_type memory` | 可用内存 |
+| `struct memblock_type reserved` | 已经划走的 |
+
+全局对象 `memblock`（`mm/memblock.c:129`，`__initdata_memblock`）。
+
+```text
+memblock_phys_alloc_range(size, align, start, end)   # memblock.c:1624
+  → memblock_alloc_range_nid(..., NUMA_NO_NODE, false)
+       在 [start, end) 里找一块对齐的空闲物理内存
+       成功返回物理地址，失败返回 0
+```
+
+它标了 `__init`。buddy 起来之后再调，就是用一张已经废弃或只读的表。运行时要连续物理页，走 CMA / `alloc_contig_pages`，见 [03](./03-buddy.md)。
+
+### KHO scratch
+
+Kexec HandOver（`Documentation/admin-guide/mm/kho.rst`）要跨 kexec 保住一块内存。早期还不知道全部保留区，上一个内核留出 scratch，本内核早期只许从这块分。对应标志是 `MEMBLOCK_KHO_SCRATCH`，`memblock_mark_kho_scratch` / `memblock_clear_kho_scratch`（`memblock.h:161-162`）。
+
+运行时把 folio 交给下一个内核的入口在 `kernel/liveupdate/kexec_handover.c`：`kho_preserve_folio`（`:1147`）、`kho_preserve_pages`（`:1222`）、`kho_preserve_vmalloc`（`:1358`）。要编进 `CONFIG_KEXEC_HANDOVER`，启动参数 `kho=on`。`kho_scratch=` 规定低端、全局、每 node 三块 scratch 的大小。没打开这个配置时，这些符号不在镜像里。
+
+---
+
+## 2.11 关键函数表
 
 | 符号 | 位置 | 作用 |
 |---|---|---|
@@ -409,7 +546,18 @@ FLATMEM 的 `mem_map` 仍声明着（`:1443`），因为有的配置两边都编
 | `lruvec_pgdat` | `mmzone.h:1665` | lruvec → node |
 | `first_zones_zonelist` | `mmzone.h:1874` | zonelist 上第一个合格 zone |
 | `__nr_to_section` | `mmzone.h:2059` | section 号 → `mem_section` |
-| `pfn_to_page` / `page_to_pfn` | `mm.h`（宏，具体展开依赖 SPARSEMEM） | PFN 与 page 互转。本节不背展开式 |
+| `__section_mem_map_addr` | `mmzone.h:2112` | 清掉 `section_mem_map` 低位，取出 page 数组 |
+| `__pfn_to_page` / `pfn_to_page` | `memory_model.h:18` / `:46` / `:60`，别名 `:74` | 三种模型下 PFN → page |
+| `__page_to_pfn` / `page_to_pfn` | 同文件 `:19` / `:47` / `:54`，别名 `:73` | 反向 |
+| `vmemmap_populate_basepages` | `mm/sparse-vmemmap.c:296` | 按 base page 铺 vmemmap |
+| `page_ref_count` | `page_ref.h:65` | 读 `_refcount` |
+| `folio_ref_count` | `page_ref.h:105` | 头页引用 |
+| `folio_get` / `folio_put` | `mm.h:2119` / `:2157` | 已持有时加减引用 |
+| `folio_try_get` | `page_ref.h:274` | 引用为 0 则失败 |
+| `folio_mapcount` | `mm.h:1947` | 用户页表映射次数 |
+| `memblock_phys_alloc_range` | `mm/memblock.c:1624` | 早期物理分配 |
+| `memblock_discard` | `memblock.h:119` 声明；`CONFIG_ARCH_KEEP_MEMBLOCK` 时 `:123` 是空的 inline | buddy 接盘后丢掉 memblock（未 KEEP 时） |
+| `kho_preserve_folio` | `kernel/liveupdate/kexec_handover.c:1147` | KHO 保住一个 folio |
 
 ---
 

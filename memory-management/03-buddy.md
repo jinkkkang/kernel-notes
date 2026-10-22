@@ -158,7 +158,7 @@ rmqueue                               # page_alloc.c:3413
 | `GFP_TRANSHUGE_LIGHT` | 381 | 可移动复合大页，**不**直接回收 |
 | `GFP_TRANSHUGE` | 383 | LIGHT 再加直接回收 |
 
-`GFP_NOFS` / `GFP_NOIO` 也会通过 `memalloc_nofs_save()` / `memalloc_noio_save()` 变成上下文范围，`current_gfp_context()` 在 frozen 分配入口把它叠上去（`:5412`）。在一个持有 FS 锁的路径里随手 `GFP_KERNEL`，会被这条机制降级；不要靠「我记得这里写了 GFP_KERNEL」判断它能不能进文件系统。
+`GFP_NOFS` / `GFP_NOIO` 也会通过 scope API 变成当前任务上的标志，分配入口再改写 gfp。位怎么清、为什么新代码该用 scope 而不是在调用点写死 `GFP_NOFS`，见 [3.7](#37-scope-api-怎么改写-gfp)。
 
 ---
 
@@ -202,7 +202,180 @@ __alloc_pages_may_oom            # :4044 → out_of_memory
 
 ---
 
-## 3.7 关键函数表
+## 3.7 scope API 怎么改写 gfp
+
+**结论**：文件系统或块层拿着自己的锁时，分配不能再递归进文件系统或提交 IO。新代码用 `memalloc_nofs_save` / `memalloc_noio_save` 把约束记在 `current->flags` 上，让这段范围内的每一次分配自动降级。调用点继续写 `GFP_KERNEL`。在每个 `kmalloc` 上手工改成 `GFP_NOFS` 会漏，也会在锁已经放下之后仍然不敢进文件系统。
+
+`Documentation/core-api/gfp_mask-from-fs-io.rst` 讲的就是这件事。实现在 `include/linux/sched/mm.h`。
+
+`memalloc_nofs_save`（`:386`）只做一件事：`memalloc_flags_save(PF_MEMALLOC_NOFS)`。`memalloc_noio_save`（`:356`）打的是 `PF_MEMALLOC_NOIO`。返回值是「这次新加上的那些位」，交给配对的 `memalloc_nofs_restore` / `memalloc_noio_restore` 清掉。save/restore 必须成对，嵌套按位恢复，不要把返回值丢掉。
+
+分配入口在用 gfp 之前调用 `current_gfp_context`（`sched/mm.h:248`）。`__alloc_frozen_pages_noprof` 里就是这样（`page_alloc.c:5412-5419`）：
+
+```c
+gfp &= gfp_allowed_mask;
+/*
+ * Apply scoped allocation constraints. This is mainly about GFP_NOFS
+ * resp. GFP_NOIO which has to be inherited for all allocation requests
+ * from a particular context which has been marked by
+ * memalloc_no{fs,io}_{save,restore}. And PF_MEMALLOC_PIN which ensures
+ * movable zones are not used during allocation.
+ */
+gfp = current_gfp_context(gfp);
+```
+
+`current_gfp_context` 读 `current->flags`，按位改写传入的 gfp，不改任务标志：
+
+| 任务标志 | 对 gfp 做的事 |
+|---|---|
+| `PF_MEMALLOC_NOIO` | 清掉 `__GFP_IO` 和 `__GFP_FS`。NOIO 比 NOFS 更严，两者同时在时 NOIO 优先 |
+| `PF_MEMALLOC_NOFS` | 只清 `__GFP_FS` |
+| `PF_MEMALLOC_PIN` | 清 `__GFP_MOVABLE`，避免把页放进可移动区（长期 pin、RDMA 一类） |
+
+所以「我在调用点写了 `GFP_KERNEL`」只说明调用者的愿望。真正生效的是 scope 叠完之后的那份。`GFP_NOFS` / `GFP_NOIO` 这两个组合宏还在（[3.4](#34-gfp-标志)），留给改不到调用栈上游的老路径。能包住临界区时用 scope。
+
+同文件还有 `memalloc_noreclaim_save`（`:427`），打 `PF_MEMALLOC`，分配隐式加上 `__GFP_MEMALLOC`，能进保留内存、不再进入回收。注释写明只给「分配是为了马上放出更多内存」的路径，并且中断上下文没有这份特权。单次分配可以用 `__GFP_NOMEMALLOC` 退出这个 scope。
+
+---
+
+## 3.8 NUMA 策略与 numactl
+
+**结论**：策略回答「这次页从哪个 node 来」。进程有一份，VMA 可以另有一份。VMA 上的优先。中断不看当前进程的策略（`mempolicy.h:30`）。用户态入口是 `set_mempolicy`、`mbind`、`migrate_pages`，numactl 是它们的命令行壳。
+
+`struct mempolicy`（`include/linux/mempolicy.h:47`，`CONFIG_NUMA`）：
+
+| 成员 | 中文 |
+|---|---|
+| `atomic_t refcnt` | 引用。`mpol_put` 减到 0 释放。`mpol_dup` 出来的新对象引用从 1 起 |
+| `unsigned short mode` | `MPOL_*`，见下 |
+| `unsigned short flags` | `MPOL_F_STATIC_NODES` / `RELATIVE_NODES` / `NUMA_BALANCING`，以及内部的 `MPOL_F_SHARED`、`MPOL_F_MOF`、`MPOL_F_MORON` |
+| `nodemask_t nodes` | bind / interleave / preferred 用的节点集合 |
+| `int home_node` | `MPOL_BIND` 和 `MPOL_PREFERRED_MANY` 的 home node |
+| `nodemask_t cpuset_mems_allowed` | 与下一字段同 union。相对模式时，相对这组 cpuset 允许的节点 |
+| `nodemask_t user_nodemask` | 同 union。用户传入的 nodemask |
+| `struct rcu_head rcu` | 释放走 RCU |
+
+没编 `CONFIG_NUMA` 时，`struct mempolicy` 是空结构（`:188`），`get_task_policy` 返回 NULL。
+
+模式（`include/uapi/linux/mempolicy.h:19`）：
+
+| 值 | 行为 |
+|---|---|
+| `MPOL_DEFAULT` | 删掉这段上的策略，退回进程默认。进程默认再空，就是本地 node 优先、允许回退 |
+| `MPOL_PREFERRED` | 优先一个 node，没有就回退 |
+| `MPOL_BIND` | 只从 `nodes` 里拿 |
+| `MPOL_INTERLEAVE` | 按页在 `nodes` 里轮转。进程自己的 interleave 游标不加锁（注释 `:34`） |
+| `MPOL_LOCAL` | 分配发生在哪个 CPU 的 node，就从哪拿 |
+| `MPOL_PREFERRED_MANY` | 一组优先 node，都没有再回退 |
+| `MPOL_WEIGHTED_INTERLEAVE` | 按节点带宽加权轮转 |
+
+`MPOL_F_STATIC_NODES`：用户给的节点号不随 cpuset 重新解释。`MPOL_F_RELATIVE_NODES`：当成相对 cpuset 允许集合的偏移。两个不要同时设。`MPOL_F_NUMA_BALANCING`：允许 NUMA balancing 在这个策略上做 migrate-on-fault。
+
+共享映射（shmem、某些文件）的策略不挂在单个 VMA 上，挂在区间树里。`struct shared_policy`（`:113`）两个成员：`struct rb_root root`、`rwlock_t lock`。树上的 `struct sp_node`（`:117`）：`struct rb_node nd`、`pgoff_t start`、`pgoff_t end`、`struct mempolicy *policy`。
+
+```text
+set_mempolicy(mode, nmask, maxnode)          # SYSCALL_DEFINE3 mempolicy.c:1857
+  → kernel_set_mempolicy                      # :1838
+       sanitize_mpol_flags
+       装到 current 的进程策略
+
+mbind(start, len, mode, nmask, maxnode, flags)  # SYSCALL_DEFINE6 :1830
+  → kernel_mbind                              # :1742
+       → do_mbind                             # :1489
+            拆/改 VMA 上的 vm_policy
+            MPOL_MF_MOVE / MOVE_ALL 时把已有页迁走
+            MPOL_MF_STRICT 且迁不动：返回 -EIO
+
+分配
+  alloc_pages_noprof                          # :2575，函数表在 3.10
+    → alloc_pages_mpol                        # :2441
+         policy_nodemask() 算出 nid 和 nodemask
+         MPOL_PREFERRED_MANY → alloc_pages_preferred_many
+         PMD 阶且策略允许当前 node：先 __GFP_THISNODE|__GFP_NORETRY
+         否则 __alloc_frozen_pages_noprof
+```
+
+`flags` 里 `MPOL_MF_STRICT`（`:51`）要求现有页也符合策略，`MPOL_MF_MOVE` 迁本进程的页，`MPOL_MF_MOVE_ALL` 连别人的共享页一起迁。`MPOL_MF_LAZY` 注释标明是不支持的标志。
+
+numactl 常见对应：`numactl --membind` → `MPOL_BIND`，`--interleave` → `MPOL_INTERLEAVE`，`--preferred` → `MPOL_PREFERRED`，`--localalloc` → `MPOL_LOCAL`。`--physcpubind` 是 CPU 亲和，不进 `struct mempolicy`。
+
+VMA 上的指针是 `vm_policy`（[06](./06-mm-and-vma.md)）。缺页分配匿名页时走这份策略。迁移本身见 [10](./10-reclaim.md) 的 `migrate_pages`。
+
+### 节点性能坐标（numaperf）
+
+`Documentation/admin-guide/mm/numaperf.rst` 讲的是：一个 node 上的内存带宽和延迟可以不一样（本地 DRAM、慢一档的内存）。内核用 `struct access_coordinate`（`include/linux/node.h:29`）装四个数：
+
+| 成员 | 中文 |
+|---|---|
+| `unsigned int read_bandwidth` | 读带宽，MB/s |
+| `unsigned int write_bandwidth` | 写带宽，MB/s |
+| `unsigned int read_latency` | 读延迟，纳秒 |
+| `unsigned int write_latency` | 写延迟，纳秒 |
+
+`ACCESS_COORDINATE_LOCAL` 是到最近 initiator 的坐标，`ACCESS_COORDINATE_CPU` 是到最近 CPU node 的坐标（`:42`）。用户态从 `/sys/devices/system/node/nodeN/access0` / `access1` 读，具体文件名以该文档和当前内核的 sysfs 为准。
+
+`mempolicy_set_node_perf`（`mm/mempolicy.c:221`）把坐标收成带宽：`min(read_bandwidth, write_bandwidth)`，写进 `node_bw_table`。`MPOL_WEIGHTED_INTERLEAVE` 的权重在 `struct weighted_interleave_state`（`mempolicy.c:158`）：`bool mode_auto`、柔性数组 `u8 iw_table[]`。auto 模式下按带宽重算权重；手工模式只更新带宽表，不改当前权重（函数注释 `:242-245`）。
+
+---
+
+## 3.9 CMA
+
+**结论**：CMA 在启动时划出物理连续的页，平时借给可移动分配用，设备要大块连续内存时再迁走借用者、把这块还回来。它解决的是「平时不能闲置一大块，驱动偶尔却要连续物理页」。
+
+区描述在 `mm/cma.h`。一块区可以有多段物理范围（中间有洞），最多 `CMA_MAX_RANGES`（8，`:38`）。
+
+`struct cma_memrange`（`:27`）：
+
+| 成员 | 条件 | 中文 |
+|---|---|---|
+| `unsigned long base_pfn` | 始终 | 这段的起始 PFN |
+| `unsigned long count` | 始终 | 这段有多少页 |
+| `unsigned long early_pfn` | 与 `bitmap` 同 union | 早期 `cma_reserve_early` 还没划走的第一个 PFN |
+| `unsigned long *bitmap` | 同 union | 运行时的分配位图。1 bit 代表 `1 << order_per_bit` 页 |
+| `struct debugfs_u32_array dfs_bitmap` | `CONFIG_CMA_DEBUGFS` | 把位图露到 debugfs |
+
+`struct cma_kobject`（`:9`）：`struct kobject kobj`、`struct cma *cma`。
+
+`struct cma`（`:40`）：
+
+| 成员 | 条件 | 中文 |
+|---|---|---|
+| `unsigned long count` | 始终 | 各 range 页数之和 |
+| `unsigned long available_count` | 始终 | 还没被 CMA 分配走的页 |
+| `unsigned int order_per_bit` | 始终 | 位图里 1 bit 对应的页阶 |
+| `spinlock_t lock` | 始终 | 位图和计数 |
+| `struct mutex alloc_mutex` | 始终 | 分配路径，避免并发在同一块里找空洞 |
+| `struct hlist_head mem_head` | `CONFIG_CMA_DEBUGFS` | debugfs 跟踪的已分配块 |
+| `spinlock_t mem_head_lock` | 同上 | 保护 `mem_head` |
+| `char name[CMA_MAX_NAME]` | 始终 | 区名，tracepoint 和失败日志用 |
+| `int nranges` | 始终 | `ranges` 里有效的段数 |
+| `struct cma_memrange ranges[CMA_MAX_RANGES]` | 始终 | 物理段 |
+| `atomic64_t nr_pages_succeeded` | `CONFIG_CMA_SYSFS` | 成功页数 |
+| `atomic64_t nr_pages_failed` | 同上 | 失败页数 |
+| `atomic64_t nr_pages_released` | 同上 | 放回页数 |
+| `struct cma_kobject *cma_kobj` | 同上 | sysfs 对象 |
+| `unsigned long flags` | 始终 | `CMA_RESERVE_PAGES_ON_ERROR`、`CMA_ZONES_VALID`、`CMA_ZONES_INVALID`、`CMA_ACTIVATED`（`:68`） |
+| `int nid` | 始终 | 所属 node。没指定时是 `NUMA_NO_NODE` |
+
+全局数组 `cma_areas[MAX_CMA_AREAS]`（`mm/cma.c:38`）。
+
+```text
+cma_alloc(cma, count, align, no_warn)     # cma.c:949
+  → cma_alloc_frozen                        # :924，gfp = GFP_KERNEL，no_warn 则加 __GFP_NOWARN
+       → __cma_alloc_frozen                 # :866
+            逐个 range 调 cma_range_alloc   # 位图里找连续的 count 页
+            成功：清 KASAN tag，CMA_ALLOC_SUCCESS
+            失败：CMA_ALLOC_FAIL，按 no_warn 决定要不要 pr_err
+  → set_pages_refcounted                    # 交给调用者之前把引用立上
+```
+
+`cma_alloc` 返回的页带正常引用。`cma_alloc_frozen` 留下的是 frozen（refcount 0），调用者自己负责立引用或走 frozen 释放。还回用 `cma_release`（`:1019`），内部 `free_contig_frozen_range` 再清位图。
+
+buddy 侧：可移动分配在 CMA 空闲超过 zone 一半时会先从 CMA 拿（[3.3](#33-rmqueue--pcp--__rmqueue)）。CMA pageblock 的 migratetype 不能和普通块合并，这是高阶分配失败的原因之一（[3.6](#36-高阶分配为什么失败)）。debugfs 在 `CONFIG_CMA_DEBUGFS` 下看位图；`vmstat` 里有 `cma_alloc_success` / `cma_alloc_fail`（`mm/vmstat.c:1402`）。
+
+---
+
+## 3.10 关键函数表
 
 | 符号 | 位置 | 作用 |
 |---|---|---|
@@ -236,6 +409,17 @@ __alloc_pages_may_oom            # :4044 → out_of_memory
 | `wakeup_kswapd` | `vmscan.c:7573` | 叫醒后台回收 |
 | `alloc_pages_exact_noprof` | `page_alloc.c:5633` | 非 2 的幂，内部分高阶再砍 |
 | `get_free_pages_noprof` | `:5503` | 返回虚拟地址。不能带 HIGHMEM |
+| `current_gfp_context` | `sched/mm.h:248` | 按 PF_MEMALLOC_NOIO/NOFS/PIN 改写 gfp |
+| `memalloc_nofs_save` / `memalloc_noio_save` | `sched/mm.h:386` / `:356` | 打开 NOFS / NOIO scope |
+| `memalloc_noreclaim_save` | `sched/mm.h:427` | 打开 PF_MEMALLOC scope |
+| `SYSCALL_DEFINE3(set_mempolicy)` | `mempolicy.c:1857` | 设进程策略 |
+| `SYSCALL_DEFINE6(mbind)` | `mempolicy.c:1830` | 设 VMA 策略，可顺带迁移 |
+| `kernel_mbind` / `do_mbind` | `:1742` / `:1489` | mbind 的两层实现 |
+| `alloc_pages_mpol` | `:2441` | 按 mempolicy 分配 |
+| `mempolicy_set_node_perf` | `:221` | 用带宽坐标更新 weighted interleave |
+| `cma_alloc` | `mm/cma.c:949` | 从 CMA 区拿连续页 |
+| `__cma_alloc_frozen` | `mm/cma.c:866` | 位图查找，返回 frozen 页 |
+| `cma_release` | `mm/cma.c:1019` | 还回 CMA |
 
 ---
 

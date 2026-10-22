@@ -30,7 +30,7 @@ sudo awk 'NR>2 {print}' /proc/slabinfo | sort -k3 -n | tail
 # cat /sys/kernel/debug/kmemleak
 ```
 
-kmemleak 标 RECIPE：本机没有确认 debugfs 里有 `kmemleak`，也不该在这台 box 上打开调试分配器。
+kmemleak 标 RECIPE：本机没有确认 debugfs 里有 `kmemleak`，也不该在这台 box 上打开调试分配器。按调用点记账的另一条路是 page_owner 和 `/proc/allocinfo`，见 14.7。
 
 用户自己的 cache：看名字是不是还在 slabtop 里，对象数是否等于进程还持有的。模块示例在 [demos/kmod_slab_cache.c](./demos/kmod_slab_cache.c)，不在本机 insmod。
 
@@ -177,6 +177,89 @@ FPR 过猛的症状不同：guest `MemFree` 不降，宿主把报告走的页分
 | 打开 tracefs、改 THP、改 balloon、嵌套 KVM | 没跑。RECIPE |
 
 用户态缺页示例的预期：`02_fault` 触摸 256 页，`ru_minflt` 的增量应不少于触摸页数（进程自身的其他缺页会使增量更大）。`ru_majflt` 应不变，因为匿名页不读盘。
+
+---
+
+## 14.7 page_owner 与分配画像
+
+**结论**：slabtop 告诉你哪个 cache 在涨。page_owner 告诉你这一页是哪条调用栈分配的。allocation profiling 把每次分配的字节和次数记在调用点上，读 `/proc/allocinfo`。两个都要内核编译开关，本机没开，下面是 v7.3 的代码路径。
+
+### page_owner
+
+`CONFIG_PAGE_OWNER`。启动参数 `page_owner=`（`early_param` 在 `mm/page_owner.c:109`）。参数为真时 `stack_depot_request_early_init()`，后面 `static_branch_enable(&page_owner_inited)`。没打开时 `pageowner_init`（`:1147`）打一行 `page_owner is disabled` 就返回。
+
+打开之后 debugfs：
+
+| 文件 | 行 | 作用 |
+|---|---|---|
+| `/sys/kernel/debug/page_owner` | `:1156`，权限 0600 | 按页打分配栈 |
+| `page_owner_stacks/show_stacks` | `:1158` | 按栈汇总 |
+| `show_handles` | `:1162` | 按 stack handle |
+| `show_stacks_handles` | `:1166` | 栈和 handle 一起 |
+| `count_threshold` | `:1170` | 少于此页数的栈不打 |
+
+分配时 `__set_page_owner`（`:353`）：
+
+```c
+handle = save_stack(gfp_mask);          /* stackdepot 把当前栈压成 handle */
+__update_page_owner_handle(page, handle, order, gfp_mask, MR_NEVER,
+                           ts_nsec, current->pid, current->tgid,
+                           current->comm);
+inc_stack_record_count(handle, gfp_mask, 1 << order);
+```
+
+`struct page_owner`（`:24`）挂在 `page_ext` 上，不是 `struct page` 的固定成员。全部字段：
+
+| 成员 | 中文 |
+|---|---|
+| `unsigned short order` | 分配阶 |
+| `short last_migrate_reason` | 最近一次迁移原因。`__folio_set_owner_migrate_reason`（`:366`）写它 |
+| `gfp_t gfp_mask` | 这次分配的 gfp |
+| `depot_stack_handle_t handle` | 分配栈 |
+| `depot_stack_handle_t free_handle` | 释放栈 |
+| `u64 ts_nsec` | 分配时刻，`local_clock()` |
+| `u64 free_ts_nsec` | 释放时刻 |
+| `char comm[TASK_COMM_LEN]` | 分配者的 comm |
+| `pid_t pid` | 分配者 pid |
+| `pid_t tgid` | 分配者 tgid |
+| `pid_t free_pid` | 释放者 pid |
+| `pid_t free_tgid` | 释放者 tgid |
+
+早期页用 `early_handle`，refcount 还没接上，释放时不减栈计数（`:342-350`）。
+
+### `struct alloc_tag`
+
+`CONFIG_MEM_ALLOC_PROFILING`。每个分配调用点在 ELF 的 `alloc_tags` 段里放一个 `struct alloc_tag`（`include/linux/alloc_tag.h:28`）：
+
+| 成员 | 中文 |
+|---|---|
+| `struct codetag ct` | 这个调用点的源码坐标。见下 |
+| `struct alloc_tag_counters __percpu *counters` | 每 CPU 的字节数和调用次数 |
+
+`struct alloc_tag_counters`（`:18`）：
+
+| 成员 | 中文 |
+|---|---|
+| `u64 bytes` | 这个调用点还活着的字节 |
+| `u64 calls` | 这个调用点还活着的分配次数 |
+
+`struct codetag`（`include/linux/codetag.h:27`）：
+
+| 成员 | 中文 |
+|---|---|
+| `unsigned int flags` | 目前有 `CODETAG_FLAG_INACCURATE`（`:20`），计数不准时置位 |
+| `unsigned int lineno` | 行号 |
+| `const char *modname` | 模块名。编进 vmlinux 时 `CT_MODULE_NAME` 是 NULL（`codetag.h:66`），编进模块时是 `KBUILD_MODNAME`（`:64`） |
+| `const char *function` | 函数名 |
+| `const char *filename` | 文件名 |
+
+`__aligned(8)`。`union codetag_ref`（`:35`）只有一个成员 `struct codetag *ct`，页或 slab 对象上存的是这个指针。
+
+`/proc/allocinfo` 的文件名宏是 `ALLOCINFO_FILE_NAME`（`mm/alloc_tag.c:24`，字符串 `"allocinfo"`），`proc_create` 在 `:1344`，权限 `0400`。读它得到每个调用点的 bytes/calls 和 `文件:行 函数`。画像关停走 `shutdown_mem_profiling`（`:594`）：`remove_file` 为真才 `remove_proc_entry`（`:603`）。`proc_create` 失败时文件还没建成，调用是 `shutdown_mem_profiling(false)`（`:1346`）。其后 `alloc_mod_tags_mem` 失败（`:1353`）、`codetag_register_type` 失败（`:1361`）、对齐失败（`:858`）、tag 位塞不进 page flag（`:908`）都传 true，把已经建成的 proc 文件删掉。
+
+`CONFIG_MEM_ALLOC_PROFILING_DEBUG` 下空 tag 用 `CODETAG_EMPTY`（`(void *)1`，`alloc_tag.h:50`）。没开这个调试选项时，空引用就是 NULL。
+
+page_owner 回答「这一页谁分配的」，allocinfo 回答「哪个调用点一共占了多少」。查泄漏先看 allocinfo 的 bytes 排序，再对得上的页用 page_owner 看栈。两个都没编进内核时，这两条文件不存在，退回 14.1 的 slabtop。
 
 ---
 

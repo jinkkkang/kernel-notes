@@ -32,7 +32,7 @@
 
 ### MGLRU：`struct lru_gen_folio`（`mmzone.h:563`）
 
-v7.3 **有**这套结构，包在 `CONFIG_LRU_GEN` 里。没编进去时，`lru_gen_shrink_node` 是空函数（`vmscan.c:5962` 的 `#else` 分支）。运行中的内核是否启用，看 `/sys/kernel/mm/lru_gen/enabled` 或 `lruvec` 里的 `enabled` 位。本机 6.12 快照里有 `workingset_*`，不能据此证明 6.12 或 v7.3 的 MGLRU 开关，那个计数两套 LRU 都有。
+v7.3 **有**这套结构，包在 `CONFIG_LRU_GEN` 里。没编进去时，`mm_inline.h:315` 的 `lru_gen_enabled()` 恒返回 false，`lru_gen_age_node`（`vmscan.c:5952`）和 `lru_gen_shrink_node`（`:5962`）的函数体是 `BUILD_BUG()`。调用点包在 `lru_gen_enabled() || lru_gen_switching()` 里，常量条件把调用裁掉，编译器不生成对这两个桩的调用。运行中的内核是否启用，看 `/sys/kernel/mm/lru_gen/enabled` 或 `lruvec` 里的 `enabled` 位。本机 6.12 快照里有 `workingset_*`，不能据此证明 6.12 或 v7.3 的 MGLRU 开关，那个计数两套 LRU 都有。
 
 | 成员 | 中文 |
 |---|---|
@@ -53,7 +53,30 @@ v7.3 **有**这套结构，包在 `CONFIG_LRU_GEN` 里。没编进去时，`lru_
 
 `lru_gen_mm_state`（`:604`）成员：`seq`、`head`、`tail`、`filters[NR_BLOOM_FILTERS]`、`stats[NR_HIST_GENS][NR_MM_STATS]`。Bloom filter 用来跳过页表扫描时已经看过的 mm。
 
-工作方式一句话：访问把 folio 提升到更年轻的代（缺页里 `lru_gen_enter_fault`，以及 `lru_gen_look_around` 顺手看相邻 PTE，`mmzone.h:692`）。回收从最老的代开始扔。比 active/inactive 两段更能分辨「刚刚碰过」和「很久没碰」。
+工作方式一句话：访问把 folio 提升到更年轻的代（缺页里 `lru_gen_enter_fault`，以及 `lru_gen_look_around` 顺手看相邻 PTE，声明 `mmzone.h:692`，定义 `vmscan.c:4256`）。回收从最老的代开始扔。比 active/inactive 两段更能分辨「刚刚碰过」和「很久没碰」。
+
+### 代际老化：`lru_gen_age_node`
+
+老化只给 kswapd 做。`balance_pgdat`（`:7157`）在 `:7265` 调 `kswapd_age_node`（`:6906`）。MGLRU 打开时它转入 `lru_gen_age_node`（`:4209`），函数开头 `VM_WARN_ON_ONCE(!current_is_kswapd())`。
+
+```text
+kswapd_age_node                         # vmscan.c:6906
+  lru_gen_enabled 或正在切换：
+    lru_gen_age_node                    # :4209
+      set_initial_priority
+      mem_cgroup_iter 扫这个 node 上的每个 memcg
+        lruvec_is_reclaimable           # :4185
+          低于 min：false
+          不够大：false
+          最老一代的出生时间 + min_ttl 已经过了：true
+      一个都不可回收，并且 trylock(oom_lock) 成功：
+        out_of_memory                   # 保护最近 min_ttl 这段工作集，宁可 OOM
+  没在切换：直接 return，不走下面的传统 inactive 老化
+```
+
+`min_ttl` 来自 `lru_gen_min_ttl`（`:4207`，jiffies）。注释（`:4229-4232`）写了两种「全都不可回收」：每一代都比 `min_ttl` 年轻，或者所有 memcg 太小 / 低于 min。两条都进同一个 `out_of_memory`。`trylock` 失败就跳过，不在 kswapd 里排队等 OOM 锁。
+
+`lru_gen_look_around`（`:4256`）是回收走 rmap 时的反馈。它要求已经拿着 PTL。清掉当前 PTE 的 young 之后，若锁没人抢、VMA 不是 `VM_SPECIAL`，就在同一个 PMD 覆盖的相邻 PTE 里找热页，把它们提升到更年轻的代。扫得够整齐就把这个 PMD 记进 Bloom filter，下一轮页表扫描可以跳过。声明在 `mmzone.h:692`，没编 MGLRU 时 `mm_inline.h` 里的内联版本直接返回 false。
 
 ---
 
@@ -80,7 +103,7 @@ v7.3 **有**这套结构，包在 `CONFIG_LRU_GEN` 里。没编进去时，`lru_
 
 ```c
 if ((lru_gen_enabled() || lru_gen_switching()) && root_reclaim(sc)) {
-    lru_gen_shrink_node(pgdat, sc);    /* :5229，未配置时是 :5962 的空函数 */
+    lru_gen_shrink_node(pgdat, sc);    /* :5229；!CONFIG_LRU_GEN 时 :5962 是 BUILD_BUG()，调用被裁掉 */
     if (!lru_gen_switching())
         return;                        /* 纯 MGLRU 全局回收，不走下面的 memcg 循环 */
 }
@@ -108,14 +131,45 @@ shrink_node_memcgs(pgdat, sc);         /* :6160 */
 
 有 swap 时，`shrink_folio_list` 把匿名 folio 写成 swap 项，PTE 变成 swap PTE，缺页走 `do_swap_page`（`memory.c:4881`）。
 
-zswap（`mm/zswap.c`）在写 swap 设备之前把页压进内存池：
+zswap（`mm/zswap.c`）在写 swap 设备之前把页压进 zsmalloc 池。换出入口在 `mm/page_io.c:238`：`zswap_store` 返回真就不再写盘。换入在 `page_io.c:480`：`zswap_load` 不是 `-ENOENT` 就不再读盘。
 
-| 符号 | 位置 | 作用 |
+`zswap_store`（`zswap.c:1488`）要求 folio 已锁且在 swap cache。`zswap_enabled` 为假就跳到 `check_old`，把这个偏移上可能残留的旧项擦掉，避免回写覆盖 swap 文件里的新数据。打开时：
+
+```text
+zswap_store(folio)                        # zswap.c:1488
+  obj_cgroup_may_zswap 失败：先 shrink_memcg，再失败则放弃
+  zswap_check_limits 到顶：放弃
+  zswap_pool_current_get
+  for 每一页：zswap_store_page            # 压缩，zs_malloc 进池
+  成功：计 ZSWPOUT
+  失败：xa_erase 掉这个 folio 每个偏移上的旧 zswap_entry
+```
+
+`zswap_load`（`:1594`）同样要求 locked + swapcache。返回值写在函数注释里：
+
+| 返回 | folio 状态 | 含义 |
 |---|---|---|
-| `zswap_store` | `zswap.c:1488` | 换出时尝试压缩进 zpool |
-| `zswap_load` | `zswap.c:1594` | 换入时解压 |
+| `0` | 解锁，标 uptodate | 解压成功。标脏，`xa_erase` 删掉压缩副本，swap cache 成为唯一内存副本 |
+| `-ENOENT` | 保持锁定 | 这个槽不在 zswap，调用者继续读盘。`zswap_never_enabled()` 也走这里 |
+| `-EINVAL` | 解锁，不标 uptodate | 大 folio。注释写明 zswap 不完整装载大 folio，调用者（`do_swap_page`）会 SIGBUS |
+| `-EIO` | 解锁，不标 uptodate | 槽在 zswap 里但解压失败，同样 SIGBUS |
 
 池满了就落到真正的 swap 设备。`/proc/meminfo` 的 `Zswap` 是压缩后占用，`Zswapped` 是原页大小。zswap 仍然算内存，不是磁盘。它和 memcg 的交换限额（`memory.swap.*`，见 cgroup 章）是两层账。
+
+压缩对象从 zsmalloc 来。`zs_malloc`（`mm/zsmalloc.c:1397`）按字节大小要一块，返回 handle，失败返回 `ERR_PTR`。
+
+```text
+zs_malloc(pool, size, gfp, nid)           # zsmalloc.c:1397
+  size == 0：-EINVAL
+  size > ZS_MAX_ALLOC_SIZE：-ENOSPC       # 太大，不进 zsmalloc
+  cache_alloc_handle
+  lookup_size_class                       # 按 size 找 size_class
+  find_get_zspage                         # 这个 class 里还有空位的 zspage
+    有：obj_malloc，fix_fullness_group
+    无：alloc_zspage，再 obj_malloc，SetZsPageMovable
+```
+
+`struct zs_pool` / `struct size_class` 的成员表这里不列。定义在 `mm/zsmalloc.c`，字段随 fullness group 和 stat 变，本节只钉分配路径。handle 不是内核虚拟地址，映射时再 `kmap`。
 
 `swappiness` 是匿名和文件的扫描比例，不是「百分之多少内存拿去 swap」。MGLRU 下 `min_seq[anon]` 和 `min_seq[file]` 可以差几代，注释说就是为了极端 swappiness（`mmzone.h:557`）。
 
@@ -127,11 +181,24 @@ zswap（`mm/zswap.c`）在写 swap 设备之前把页压进内存池：
 
 ```text
 out_of_memory
-  选 victim（oom_score，oom_score_adj）
+  oom_badness                              # oom_kill.c:199，给每个候选打分
   oom_kill_process                         # :1008
     __oom_kill_process                     # :912
       发 SIGKILL，标 TIF_MEMDIE / 相关标志，让它的退出路径能分配
 ```
+
+`oom_badness` 返回 `LONG_MIN` 的进程不参与选择：`oom_unkillable_task`、`find_lock_task_mm` 失败、`oom_score_adj == OOM_SCORE_ADJ_MIN`、mm 已标 `MMF_OOM_SKIP`、或正在 `in_vfork`。剩下的分数是三笔账加一次平移：
+
+```c
+points = get_mm_rss_sum(p->mm)
+       + get_mm_counter_sum(p->mm, MM_SWAPENTS)
+       + mm_pgtables_bytes(p->mm) / PAGE_SIZE;   /* rss + swap 项 + 页表页 */
+adj = (long)p->signal->oom_score_adj;
+adj *= totalpages / 1000;                        /* 把 -1000..1000 摊到总页数上 */
+points += adj;
+```
+
+`oom_score_adj` 为 0 时，分数就是这个 mm 占的页。调到 `OOM_SCORE_ADJ_MIN` 直接排除，调高则在同样 rss 下更先被选中。`/proc/<pid>/oom_score_adj` 写的就是这个字段。`totalpages` 由 `constrained_alloc`（`:248`）按约束算：memcg OOM 用 `mem_cgroup_get_max`，cpuset / mempolicy 只用允许的节点。
 
 memcg 的 OOM 是另一条：charge 撞上 `memory.max` 且回收失败。事件在 `memory.events` 的 `oom` / `oom_kill`，`memory.oom.group` 决定杀一个还是一组。实现仍在 `mm/memcontrol.c` 和 `oom_kill.c` 的 memcg 辅助函数里。不要把全局 `oom_kill` 计数当成某个容器的 OOM。本机 `oom_kill` 是 0。
 
@@ -154,7 +221,127 @@ tracepoint（`include/trace/events/oom.h`）：`mark_victim`（`:76`）、`wake_
 
 ---
 
-## 10.6 关键函数表
+## 10.6 unevictable LRU 与 mlock
+
+**结论**：mlock 住的 folio 不进 inactive/active 的扫描。`folio_set_unevictable` 之后，`folio_lru_list`（`mm_inline.h:82`）返回 `LRU_UNEVICTABLE`（`mmzone.h:394`），`lruvec_add_folio` 把它放进 `lruvec->lists[LRU_UNEVICTABLE]`。回收看这个标志，不从这条链上偷页。
+
+`mlock.c:55-58` 的注释写「unevictable 链表其实不存在」。v7.3 的 `folio_lru_list` 和 `enum lru_list` 里这条链是有的。以这两个定义为准，那句注释和当前链表对不上。
+
+系统调用：
+
+```text
+mlock(start, len)                         # SYSCALL mm/mlock.c:667
+  do_mlock                                # :619
+    can_do_mlock 否则 -EPERM
+    长度按页对齐
+    RLIMIT_MEMLOCK（页数）。超了且没有 CAP_IPC_LOCK：
+      扣掉区间里已经 mlock 的页（count_mm_mlocked_page_nr，:578）再比一次
+    apply_vma_lock_flags                  # :519，mmap 写锁下改 VMA
+      mlock_fixup                         # :467
+        mlock_vma_pages_range             # :423，走页表，已在的页进 mlock batch
+    mmap_write_unlock
+    __mm_populate                         # :661，把还没缺页的地址补上
+      populate_vma_page_range             # mm/gup.c:1813
+
+mlock2(start, len, MLOCK_ONFAULT)         # :674
+  多设 VMA_LOCKONFAULT_BIT（:682）
+  同样进 do_mlock
+  populate_vma_page_range 看到 VM_LOCKONFAULT（mm.h:425，判断在 gup.c:1832）
+    直接返回页数，不在这里 fault-in。页留到以后真正缺页时再锁
+
+munlock                                   # :687，flags 清空 VMA_LOCKED_MASK
+```
+
+已经映射的页进 `mlock_folio_batch`（`:186`）。folio 指针的低两位是标志，不是地址：`LRU_FOLIO`（`0x1`）走 `__mlock_folio`（`:61`），`NEW_FOLIO`（`0x2`）走 `__mlock_new_folio`（`:103`），都没有就 `__munlock_folio`（`:122`）。
+
+`__mlock_folio` 拿 lruvec 锁。folio 不可驱逐时：从当前链摘下，`folio_set_unevictable`，`mlock_count` 记成「是否已经 PG_mlocked」，再 `lruvec_add_folio` 放回 unevictable 链，计 `UNEVICTABLE_PGCULLED`。已经在这条链上且仍 mlocked，只把 `mlock_count++`。`__munlock_folio` 把 `mlock_count` 减到 0 且 `folio_evictable` 为真时，清掉 unevictable，放回普通 LRU。
+
+`mlock_count` 少算会把页留在 unevictable 上。`mlock_fixup` 的注释（`:432-436`）写了并发迁移或回收可能重复加计数。统计看 vmstat 的 `unevictable_pgs_culled` / `unevictable_pgs_rescued` / `unevictable_pgs_mlocked`。
+
+secretmem 和 `vma_supports_mlock` 为假的 VMA 在 `mlock_fixup`（`:476`）里直接跳过，不设 `VMA_LOCKED_BIT`。
+
+---
+
+## 10.7 `migrate_pages`：压缩、NUMA、热插拔共用
+
+**结论**：迁移是「隔离出一批 folio，分配目标 folio，把内容搬过去，失败的放回原链」。`migrate_pages`（`mm/migrate.c:2100`）是这条公共路径。返回没迁走的 folio 数（普通页、大页、hugetlb 都算），或者负数错误。调用者在返回非 0 时自己 `putback_movable_pages`。
+
+模式在 `include/linux/migrate_mode.h:11`：
+
+| 模式 | 注释里的含义 |
+|---|---|
+| `MIGRATE_ASYNC` | 不睡眠 |
+| `MIGRATE_SYNC_LIGHT` | 大部分操作可以等，但不走 `->writepage` |
+| `MIGRATE_SYNC` | 迁移过程中允许睡眠 |
+
+```text
+migrate_pages(from, get_new_folio, ...)   # migrate.c:2100
+  migrate_hugetlbs                        # 大页先单独迁，失败的留在 ret_folios
+  again：
+    按页数切一批，上限 NR_MAX_BATCHED_MIGRATION
+      CONFIG_TRANSPARENT_HUGEPAGE：HPAGE_PMD_NR（:1611）
+      否则 512（:1613）
+    MIGRATE_ASYNC → migrate_pages_batch，重试 NR_MAX_MIGRATE_PAGES_RETRY（10，:1615）
+    其它模式 → migrate_pages_sync
+    被拆开的大页再以 MIGRATE_ASYNC 试一次
+    from 还有剩余：回到 again
+  永久失败的 folio 接回 from
+  计 PGMIGRATE_SUCCESS / PGMIGRATE_FAIL / THP_MIGRATION_*
+```
+
+谁在调（理由在 `enum migrate_reason`，`migrate_mode.h:17`）：
+
+| 调用点 | 模式 | reason |
+|---|---|---|
+| `compact_zone` `mm/compaction.c:2698` | `cc->mode` | `MR_COMPACTION` |
+| `__alloc_contig_migrate_range` `mm/page_alloc.c:7174` | `cc->mode` | `MR_CONTIG_RANGE` |
+| `do_mbind` `mm/mempolicy.c:1617` | `MIGRATE_SYNC` | `MR_MEMPOLICY_MBIND` |
+| `migrate_to_node` `mempolicy.c:1322` | `MIGRATE_SYNC` | `MR_SYSCALL` |
+| `migrate_misplaced_folio` `mm/migrate.c:2765` | `MIGRATE_ASYNC` | `MR_NUMA_MISPLACED` |
+| `demote_folio_list` `mm/vmscan.c:1033` | `MIGRATE_ASYNC` | `MR_DEMOTION` |
+| `do_migrate_range` `mm/memory_hotplug.c:1920` | `MIGRATE_SYNC` | `MR_MEMORY_HOTPLUG` |
+
+热插拔那条在 [12.9](./12-balloon-fpr-and-overcommit.md)。NUMA 策略本身在 [03](./03-buddy.md) 的 mempolicy 一节，这里只标它最后也进 `migrate_pages`。
+
+---
+
+## 10.8 swap table：一个 cluster 一张表
+
+**结论**：v7.3 的 swap 槽状态在 `struct swap_table` 里，每个 cluster 一张，和槽一一对应。定义在 `mm/swap_table.h:10`。`Documentation/mm/swap-table.rst` 讲的就是这张表。槽状态以头文件 `:26-33` 的布局为准。
+
+`SWAPFILE_CLUSTER`（`mm/swap.h:32`）：`CONFIG_THP_SWAP` 时等于 `HPAGE_PMD_NR`，否则 256（`:35`）。
+
+### `struct swap_table`（`swap_table.h:10`）
+
+| 成员 | 中文 |
+|---|---|
+| `atomic_long_t entries[SWAPFILE_CLUSTER]` | 这个 cluster 里每个槽一项。一项是一个 `atomic_long_t` |
+
+### `struct swap_memcg_table`（`:15`，仅 `CONFIG_MEMCG` 的读写路径会用）
+
+| 成员 | 中文 |
+|---|---|
+| `unsigned short id[SWAPFILE_CLUSTER]` | 每个槽的 memcg 私有 id。挂在 `swap_cluster_info->memcg_table` 上，和 entry 里的类型分开存 |
+
+头文件 `:26-33` 写的布局（低位是类型标记）：
+
+| 类型 | 低位标记 | 含义 |
+|---|---|---|
+| NULL | 全 0（`SWP_TB_NULL`） | 空槽，可以分配 |
+| Shadow | 最低位 `0b1`（`SWP_TB_SHADOW_MARK`） | 已换出、不在 swap cache。复用 xarray value 的格式，好和 workingset shadow 兼容。`SHADOW_VAL` 可以是 0，仍保持 shadow 形态占位。memcg id 嵌在 `SHADOW_VAL` 里 |
+| PFN | `0b10`（`SWP_TB_PFN_MARK`） | 槽在用，而且有 cache 页。memcg 记在 page 上，不在这项里 |
+| Pointer | 低三位 `0b100` | 头文件写 Unused。留给 8 字节对齐指针，低三位才能当标记 |
+| Bad | 低三位 `0b1000` 且其余位全 1（`SWP_TB_BAD`） | 坏槽。保护 swap 头，或设备上的洞 |
+
+高位是标志。`SWP_TB_FLAGS_BITS`（`:72`）是 `min(5, BITS_PER_LONG - SWP_TB_PFN_BITS)`。其中计数占 `SWP_TB_COUNT_BITS`，剩下的一位在 `SWAP_TABLE_HAS_ZEROFLAG` 为真时是 zero flag（`SWP_TB_ZERO_FLAG`，`:79`）。位数不够就把 zero 记到 `swap_cluster_info->zero_bitmap`（`__swap_table_set_zero`，`:267`）。
+
+读写必须在 cluster 锁下，除了 `swap_table_get`（`:251`）走 RCU 读 `ci->table`。表指针空就当成 NULL 项。`__swap_table_set` / `__swap_table_xchg` / `__swap_table_get` 都 `VM_WARN` 偏移越过 `SWAPFILE_CLUSTER`。
+
+`SWP_TABLE_USE_PAGE`（`:19`）在 `sizeof(struct swap_table) == PAGE_SIZE` 时为真，这时一张表正好占一页。
+
+---
+
+## 10.9 关键函数表
 
 | 符号 | 位置 | 作用 |
 |---|---|---|
@@ -165,7 +352,20 @@ tracepoint（`include/trace/events/oom.h`）：`mark_victim`（`:76`）、`wake_
 | `try_to_free_pages` | `:6769` | 直接回收入口 |
 | `do_try_to_free_pages` | `:6547` | 扫 zonelist 上的 node |
 | `shrink_node` | `:6239` | 一个 node |
-| `lru_gen_shrink_node` | `:5229`（无配置时 `:5962`） | MGLRU 全局回收 |
+| `lru_gen_shrink_node` | `:5229`（`!CONFIG_LRU_GEN` 时 `:5962` 为 `BUILD_BUG()`） | MGLRU 全局回收 |
+| `lru_gen_age_node` | `:4209`（`!CONFIG_LRU_GEN` 时 `:5952` 为 `BUILD_BUG()`） | kswapd 代际老化，必要时 OOM |
+| `kswapd_age_node` | `:6906` | `balance_pgdat` 里调用老化 |
+| `lru_gen_look_around` | `:4256`（声明 `mmzone.h:692`） | rmap 扫描时提升相邻热页 |
+| `oom_badness` | `mm/oom_kill.c:199` | rss + swap + 页表，再加 `oom_score_adj` |
+| `constrained_alloc` | `:248` | OOM 约束与 `totalpages` |
+| `zs_malloc` | `mm/zsmalloc.c:1397` | 从 zsmalloc 池要一块 |
+| `zswap_store_page` | `mm/zswap.c:1408` | 压缩一页并挂进 zswap 树 |
+| `do_mlock` / `mlock` | `mm/mlock.c:619` / `:667` | mlock 系统调用 |
+| `mlock2` / `munlock` | `:674` / `:687` | onfault 锁 / 解锁 |
+| `mlock_folio_batch` | `:186` | 批量把 folio 挪到 unevictable |
+| `migrate_pages` | `mm/migrate.c:2100` | 迁移一批 folio |
+| `migrate_misplaced_folio` | `:2755` | NUMA balancing 迁一页 |
+| `demote_folio_list` | `mm/vmscan.c:997` | 回收降级到更慢的节点 |
 | `shrink_node_memcgs` | `:6160` | 按 memcg |
 | `isolate_lru_folios` | `:1679` | 从 LRU 摘 folio |
 | `shrink_folio_list` | `:1058` | 释放 / 写出 / 放回 |

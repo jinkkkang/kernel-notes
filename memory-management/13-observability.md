@@ -219,7 +219,171 @@ PSI 的实现和 cgroup 聚合见 [cgroup/08-psi-rstat.md](../cgroup/08-psi-rsta
 | 页表 | guest `PageTables` | 宿主 `SecPageTables`（EPT）+ qemu 自己的 `PageTables` |
 | OOM | guest `dmesg` 和 `oom_kill` | 宿主 OOM killer 可能杀的是 qemu 整个进程，guest 里什么都没有 |
 
-本机快照是宿主视角（这台 box 自己的 `/proc`）。`SecPageTables` 为 0，`balloon_*` 却非 0：气球计数在，二级页表记账没有。两者不矛盾，一个是事件累计，一个是当前存量。
+本机快照是宿主视角（这台 box 自己的 `/proc`）。`SecPageTables` 为 0，`balloon_*` 非 0：气球计数在，二级页表记账是 0。一个是事件累计，一个是当前存量。
+
+---
+
+## 13.9 pagemap、soft-dirty、idle page
+
+**结论**：工作集估算用三件套。`/proc/<pid>/pagemap` 看这个进程每一页现在是什么；soft-dirty 看两次清零之间谁被写过；`/sys/kernel/mm/page_idle/bitmap` 按 PFN 看谁被碰过。pagemap 和 clear_refs 的文件权限是 `S_IRUSR` / `S_IWUSR`（`fs/proc/base.c:3325`、`:3322`）。kpageflags 是 `S_IRUSR`。page_idle 的 bitmap 是 `0600`。本机快照没采这三份。
+
+### `/proc/<pid>/pagemap`
+
+`pagemap_read`（`fs/proc/task_mmu.c:2304`）。文件偏移和读长度都必须是 `PM_ENTRY_BYTES`（一项 `u64`，`:1951`）的整数倍，否则 `-EINVAL`。注释（`:2287-2292`）和宏（`:1952-1960`）一致：
+
+| 位 | 宏 | 含义 |
+|---|---|---|
+| 0–54 | `PM_PFRAME_BITS` 55，`PM_PFRAME_MASK` | 存在时是 PFN。在 swap 里时是 swap 文件号和偏移的编码。没映射是 0 |
+| 55 | `PM_SOFT_DIRTY` | soft-dirty |
+| 56 | `PM_MMAP_EXCLUSIVE` | 独占映射 |
+| 57 | `PM_UFFD_WP` | userfaultfd write-protect |
+| 58 | `PM_GUARD_REGION` | guard region |
+| 59–60 | 无宏 | 注释写 zero |
+| 61 | `PM_FILE` | 文件页或共享匿名 |
+| 62 | `PM_SWAP` | 在 swap |
+| 63 | `PM_PRESENT` | 在内存里 |
+
+`:2327` 的注释写「do not disclose physical addresses」。下一行 `pm.show_pfn = file_ns_capable(file, &init_user_ns, CAP_SYS_ADMIN)`。没有 `CAP_SYS_ADMIN`，PFN 字段不填真地址。高效读法是先看 `/proc/<pid>/maps`，对空洞 `llseek` 跳过（注释 `:2300`）。
+
+`/proc/kpagecount` 和 `/proc/kpageflags` 在 `fs/proc/page.c`：`kpagecount_read` `:128`，`kpageflags_read` `:255`，`proc_create` 在 `:282` 和 `:283`，权限 `S_IRUSR`。kpagecount 是 mapcount，kpageflags 是页标志。和 pagemap 的 PFN 对上之后才能从「这个进程的虚拟页」走到「这张物理页的标志」。
+
+### soft-dirty
+
+`clear_soft_dirty`（`task_mmu.c:1706`）。`pgtable_supports_soft_dirty()` 为假直接返回。PTE 为空返回。存在的 PTE：
+
+```c
+if (pte_is_pinned(vma, addr, ptent))   /* :1690：可写、COW、mm 有 pin、folio 可能被 DMA pin */
+    return;                            /* pin 住的页跳过，不清 soft-dirty */
+old_pte = ptep_modify_prot_start(vma, addr, pte);
+ptent = pte_wrprotect(old_pte);        /* 写成只读，下次写再缺页，才能抓住写 */
+ptent = pte_clear_soft_dirty(ptent);
+ptep_modify_prot_commit(...);
+```
+
+不在内存里的 swap PTE 走 `pte_swp_clear_soft_dirty`（`:1732`）。PMD 大页另有 `clear_soft_dirty_pmd`（`:1738`，要 `CONFIG_TRANSPARENT_HUGEPAGE`）。
+
+清零的用户接口是写 `/proc/<pid>/clear_refs`。`clear_refs_write`（`task_mmu.c:1858`）把写入的整数当成 `enum`（`:1678` 起）：`CLEAR_REFS_SOFT_DIRTY` 的值是 4（`:1681`）。写 4 再读 pagemap 的 bit 55，置位的就是这段时间里被写过的页。pin 住的页清不掉，不要把它们算进「没被写」。
+
+### idle page tracking
+
+`/sys/kernel/mm/page_idle/bitmap`。属性组 `page_idle_attr_group`（`mm/page_idle.c:209`），名字 `"page_idle"`，`subsys_initcall`（`:214`）挂到 `mm_kobj`。
+
+写（`page_idle_bitmap_write`，`:163`）：偏移和长度按 `BITMAP_CHUNK_SIZE` 对齐。某个 bit 为 1 时，`page_idle_get_folio` 拿到 folio，`page_idle_clear_pte_refs`（`:97`）用 `rmap_walk`（`:114`，`rmap_one` 是 `page_idle_clear_pte_refs_one`）清掉 PTE 上的 young，再 `folio_set_idle`（`:189`）。
+
+读（`page_idle_bitmap_read`，`:118`）：同一对齐规则。folio 带 idle 标志时，先 `page_idle_clear_pte_refs` 再查一次。`page_idle_clear_pte_refs_one`（`:52`）若发现 PTE/PMD 的 young 被清掉了，就 `folio_clear_idle`（`:86`）并且这一位不置位；young 本来就是 0、idle 标志还在，输出位才置 1（`:151`）。读一个确实 idle 的页不会把它的 idle 标志清掉。folio 拿不到锁时 `page_idle_clear_pte_refs` 直接返回（`:111`），这一轮 young 可能还在。估算是近似的。
+
+要开一个新的观测窗口，再写一遍 bitmap，把关心的 PFN 标回 idle。
+
+---
+
+## 13.10 DAMON
+
+**结论**：DAMON 用一个内核线程周期采样访问，把地址空间收成若干 region，每个 region 有访问计数。用户态从 sysfs 或 debugfs 配间隔和 scheme。本节钉上下文结构，scheme 的动作表（pageout、migrate、`MR_DAMON`）不展开。
+
+`damon_new_ctx`（`mm/damon/core.c:832`）分配一个 `struct damon_ctx`。`damon_start`（`:1974`）对每个 ctx 先做一次 commit 校验（临时 ctx 上 `__damon_commit_ctx`，完了就 `damon_destroy_ctx`），再在 `damon_lock` 下调用 `__damon_start`（`:1935`）。`exclusive` 为真且已经有运行中的 ctx，返回 `-EBUSY`。
+
+```text
+__damon_start(ctx)                        # core.c:1935，调用时已持 damon_lock
+  kdamond 已在：-EBUSY
+  kthread_run(kdamond_fn, ctx, "kdamond.%d", nr_running_ctxs)
+  成功：wait_for_completion(kdamond_started)
+```
+
+### `struct damon_attrs`（`include/linux/damon.h:809`）
+
+嵌在 `damon_ctx` 开头。时间单位是微秒。
+
+| 成员 | 中文 |
+|---|---|
+| `unsigned long sample_interval` | 两次采样的间隔。每次看 region 在上一个间隔里有没有被访问 |
+| `unsigned long aggr_interval` | 聚合间隔。这段时间里把访问累加到 `damon_region->nr_accesses`，到点清零 |
+| `unsigned long ops_update_interval` | 隔这么久检查监控目标要不要更新（虚拟地址监控时，应用 `mmap` 会改区间） |
+| `struct damon_intervals_goal intervals_goal` | 自动调 sample/aggr 的目标。`aggrs == 0` 时整结构被忽略 |
+| `unsigned long min_nr_regions` | 自适应 region 数下限 |
+| `unsigned long max_nr_regions` | 上限 |
+| `unsigned long aggr_samples` | 私有。`aggr_interval / sample_interval`。外部调 `damon_set_attrs` 时这个字段可以不填，函数自己算；kdamond 内部再调时保留调用者填的值 |
+
+`struct damon_intervals_goal`（`:735`）：
+
+| 成员 | 中文 |
+|---|---|
+| `unsigned long access_bp` | 目标访问事件比例，单位 bp（1/10000） |
+| `unsigned long aggrs` | 在多少次聚合里达到这个比例。0 表示关闭自动调节 |
+| `unsigned long min_sample_us` | 调出来的采样间隔下限 |
+| `unsigned long max_sample_us` | 上限 |
+
+### `struct damon_ctx`（`:854`）
+
+头文件把一部分标了 public，其余是 private。全部成员如下。
+
+| 成员 | 可见性 | 中文 |
+|---|---|---|
+| `struct damon_attrs attrs` | public（结构开头） | 上面那组间隔和 region 数 |
+| `unsigned long passed_sample_intervals` | private | 这个 ctx 启动后已经过去多少个采样间隔 |
+| `unsigned long next_aggregation_sis` | private | 下次聚合前还要过多少个采样间隔 |
+| `unsigned long next_ops_update_sis` | private | 下次更新监控目标前还要过多少个 |
+| `unsigned long next_intervals_tune_sis` | private | 下次自动调间隔前还要过多少个 |
+| `struct completion kdamond_started` | private | `__damon_start` 等 kdamond 真正跑起来 |
+| `unsigned long *regions_score_histogram` | private | scheme quota 排序用的直方图 |
+| `struct list_head call_controls` | private | `damon_call_control` 链表。kdamond 之外的线程用 `damon_call()` 把活交进来 |
+| `bool call_controls_obsolete` | private | 上面这张表过期了 |
+| `struct mutex call_controls_lock` | private | 保护 call_controls |
+| `struct damos_walk_control *walk_control` | private | `damos_walk()` 的控制块 |
+| `bool walk_control_obsolete` | private | walk 控制块过期 |
+| `struct mutex walk_control_lock` | private | 保护 walk_control |
+| `bool maybe_corrupted` | private | 注释写目前只在 `damon_commit_ctx()` 失败时置位 |
+| `struct task_struct *kdamond` | private | 这个 ctx 的内核线程。NULL 表示没在跑 |
+| `struct mutex kdamond_lock` | private | 保护 `kdamond` |
+| `unsigned long addr_unit` | public | core 和 ops 之间的地址换算比例 |
+| `unsigned long min_region_sz` | public | region 最小尺寸 |
+| `bool pause` | public | 让 kdamond 主循环暂停 |
+| `struct damon_operations ops` | private | 这套用例的采样 / 目标有效性回调 |
+| `struct list_head adaptive_targets` | private | `damon_target` 链表 |
+| `struct list_head probes` | private | `damon_probe` 链表 |
+| `struct list_head schemes` | private | `damos` scheme 链表 |
+| `struct rnd_state rnd_state` | private | `damon_rand()` 用的 per-ctx PRNG 状态 |
+
+kdamond 跑起来之后，别的线程碰这个 ctx 要走 `damon_call()` 或 `damos_walk()`。直接改链表会和采样线程赛跑。线程在所有 target 都无效，或有人 `damon_stop()` 时退出。pid 用 `damon_kdamond_pid()` 取。
+
+---
+
+## 13.11 shrinker debugfs
+
+**结论**：每个 shrinker 在 `/sys/kernel/debug/shrinker/<名字>-<id>/` 下有 `count` 和 `scan`。`count` 只读，问这个 shrinker 还有多少对象。`scan` 只写，让它立刻扫一批。用来确认「slab 回收不动」是 count 就是 0，还是 scan 了但扫不动。
+
+根目录由 `shrinker_debugfs_init`（`mm/shrinker_debug.c:247`）创建：`debugfs_create_dir("shrinker", NULL)` 在 `:253`，dentry 存 `shrinker_debugfs_root`（`:16`）。每个 shrinker 注册时 `shrinker_debugfs_add`（`:159`）用 ida 拿 `debugfs_id`，目录名 `"%s-%d"`（名字加 id，`:176`）。init 末尾持 `shrinker_mutex` 把启动时已经挂上、还没有 dentry 的 shrinker 补登记（`:260`）。
+
+| 文件 | 权限 | 实现 |
+|---|---|---|
+| `count` | `0440` | `shrinker_debugfs_count_show`（`:47`）。有 `count_objects` 才创建（`:186`） |
+| `scan` | `0220` | `shrinker_debugfs_scan_write`（`:100`）。有 `scan_objects` 才创建（`:189`） |
+
+`count` 的输出：对每个在线 memcg（shrinker 不感知 memcg 时只打 id 0 那一行）一行，先是 memcg id，再每个 node 的对象数。`count_objects` 返回 `SHRINK_EMPTY` 时记 0（`:34`）。非 NUMA-aware 的 shrinker 只问 node 0（`:26`）。
+
+`scan` 的写格式是三个数：`memcg_id nid nr_to_scan`（`sscanf`，`:119`）。`nr_to_scan == 0` 直接返回。不感知 memcg 时 id 必须是 0，否则 `-EINVAL`。感知时用 `mem_cgroup_get_from_id`，memcg 不在线返回 `-ENOENT`。然后填 `shrink_control` 调 `shrinker->scan_objects`（`:146`）。
+
+debugfs 还没挂上时 `shrinker_debugfs_add` 直接返回 0（`:168`），shrinker 先记在 `shrinker_list` 里，等根目录出现再补。本机非 root 读不到 debugfs，这一节是配方，不是本机实测。
+
+---
+
+## 13.12 关键函数表
+
+| 符号 | 位置 | 作用 |
+|---|---|---|
+| `pagemap_read` | `fs/proc/task_mmu.c:2304` | 读 `/proc/<pid>/pagemap` |
+| `clear_soft_dirty` | `:1706` | 清 PTE soft-dirty 并写保护 |
+| `clear_soft_dirty_pmd` | `:1738` | PMD 大页的同一件事 |
+| `kpageflags_read` | `fs/proc/page.c:255` | `/proc/kpageflags` |
+| `kpagecount_read` | `:128` | `/proc/kpagecount` |
+| `page_idle_bitmap_read` | `mm/page_idle.c:118` | 读 idle bitmap |
+| `page_idle_bitmap_write` | `:163` | 把 PFN 标成 idle |
+| `page_idle_clear_pte_refs` | `:97` | 标 idle 前清 PTE young |
+| `damon_new_ctx` | `mm/damon/core.c:832` | 分配 `damon_ctx` |
+| `damon_start` | `:1974` | 启动一组 kdamond |
+| `__damon_start` | `:1935` | `kthread_run(kdamond_fn)` |
+| `shrinker_debugfs_count_show` | `mm/shrinker_debug.c:47` | debugfs `count` |
+| `shrinker_debugfs_scan_write` | `:100` | debugfs `scan` |
+| `shrinker_debugfs_add` | `:159` | 给一个 shrinker 建目录 |
 
 ---
 
