@@ -168,4 +168,45 @@ struct my_obj *obj = (struct my_obj *)(p_member - offsetof(struct my_obj, link))
 
 ---
 
+---
+
+## 1.9 可执行 Demo：`container_of`
+
+源码：[demos/01_container_of.c](./demos/01_container_of.c)（**用户态教学实现**，自写最小宏，非内核源码拷贝）。
+
+### 怎么编译运行
+
+```bash
+cd locks-and-ds/demos
+gcc -Wall -O2 -o 01_container_of 01_container_of.c
+./01_container_of
+```
+
+### 本机实测输出
+
+> 环境：2026-10-22 16:40:47 CST（Asia/Shanghai）；Linux 6.12.94+；gcc (Debian 14.2.0-19) 14.2.0  
+> 地址每次运行会变；关键是 `container_of` 找回的指针与 `&obj` 相同。
+
+```text
+sizeof(struct my_obj)     = 40
+offsetof(my_obj, id)      = 0
+offsetof(my_obj, name)    = 4
+offsetof(my_obj, link)    = 24
+&obj                      = 0x7ffc7847a090
+&obj.link                 = 0x7ffc7847a0a8
+container_of(...)         = 0x7ffc7847a090
+recovered->id             = 42
+recovered->name           = demo
+same object?              = YES
+```
+
+### 和内核 API 的对照
+
+| 用户态 Demo | 内核 |
+|---|---|
+| `<stddef.h>` 的 `offsetof` | `include/linux/stddef.h` |
+| 教学宏 `container_of(ptr,type,member)` | `include/linux/container_of.h`（另有类型检查 / `container_of_const`） |
+| `&obj.link` → 外层 `my_obj *` | `list_entry` / `list_for_each_entry` 的同一算术 |
+
+
 *下一节：把 `container_of` 用在真正的 `list_head` 上。*

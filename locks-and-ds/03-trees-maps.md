@@ -184,4 +184,62 @@ hash_del(&obj->hnode);
 
 ---
 
+---
+
+## 3.8 可执行 Demo：哈希桶 + hlist 风格
+
+### 用户态（本机已跑通）
+
+源码：[demos/03_hash_hlist.c](./demos/03_hash_hlist.c)——固定 8 桶、字符串键、`hlist_node.pprev` 头插/删除/查找。  
+（红黑树完整旋转代码较长；xarray / maple / IDR 见下方内核模块示例。）
+
+```bash
+cd locks-and-ds/demos
+gcc -Wall -O2 -o 03_hash_hlist 03_hash_hlist.c
+./03_hash_hlist
+```
+
+> 环境：2026-10-22 16:40:47 CST（Asia/Shanghai）；Linux 6.12.94+；gcc (Debian 14.2.0-19) 14.2.0
+
+```text
+insert key=apple value=1 -> bucket[7]
+insert key=banana value=2 -> bucket[6]
+insert key=cherry value=3 -> bucket[2]
+insert key=date value=4 -> bucket[3]
+insert key=apple2 value=5 -> bucket[1]
+bucket[1]: {apple2=5}
+bucket[2]: {cherry=3}
+bucket[3]: {date=4}
+bucket[6]: {banana=2}
+bucket[7]: {apple=1}
+lookup banana -> banana
+  value=2
+delete cherry
+lookup cherry after del -> NULL
+bucket[1]: {apple2=5}
+bucket[3]: {date=4}
+bucket[6]: {banana=2}
+bucket[7]: {apple=1}
+```
+
+| Demo | 内核直觉 |
+|---|---|
+| `buckets[HASH_SIZE]` + `hlist_add_head` | `DEFINE_HASHTABLE` + 桶内 `hlist` |
+| `pprev` 删除 O(1) | `hlist_del`：`*pprev = next` |
+| `container_of(n, struct item, node)` | `hlist_entry` / `hlist_for_each_entry` |
+
+### 内核模块示例：IDR（示例勿直接生产加载）
+
+源码：[demos/kmod_idr_example.c](./demos/kmod_idr_example.c)。示意 `idr_alloc` / `idr_find` / `idr_remove` / `idr_for_each_entry`。
+
+```bash
+cd locks-and-ds/demos
+make -f Makefile.example
+# sudo insmod kmod_idr_example.ko && dmesg | tail
+# sudo rmmod kmod_idr_example
+```
+
+xarray / maple tree 用法更长，建议在实验机对照 Documentation 与 elixir **v7.3** 头文件试；本目录不放「假完整」用户态移植，以免和真实 API 脱节。
+
+
 *下一节：原子计数与 `refcount_t`——锁和对象生命周期的地基。*

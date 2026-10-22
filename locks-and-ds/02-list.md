@@ -203,4 +203,52 @@ struct hlist_node {
 
 ---
 
+---
+
+## 2.8 可执行 Demo：侵入式链表
+
+### 用户态（本机已跑通）
+
+源码：[demos/02_list.c](./demos/02_list.c)——最小 `list_head` / `list_add` / `list_add_tail` / `list_del` / `list_for_each_entry` / `_safe`。
+
+```bash
+cd locks-and-ds/demos
+gcc -Wall -O2 -o 02_list 02_list.c
+./02_list
+```
+
+> 环境：2026-10-22 16:40:47 CST（Asia/Shanghai）；Linux 6.12.94+；gcc (Debian 14.2.0-19) 14.2.0
+
+```text
+after add (expect C A B): {C age=30} {A age=10} {B age=20}
+walk with list_for_each_entry:
+  pos=0x7ffee9251360 tag=C age=30
+  pos=0x7ffee9251320 tag=A age=10
+  pos=0x7ffee9251340 tag=B age=20
+deleting B during walk
+after safe-delete B (expect C A): {C age=30} {A age=10}
+```
+
+| Demo 行为 | 内核对应 |
+|---|---|
+| `list_add_tail` 两次再 `list_add` | 同名 API：`list.h` 头插 / 尾插 |
+| `list_for_each_entry` 打出业务对象 | 宏内 `list_entry` → `container_of` |
+| `_safe` 里删 `age==20` | 遍历中删除必须暂存 next |
+
+教学实现**故意不用 poison**，方便用户态打印；内核 `list_del` 会写入 `LIST_POISON*`。
+
+### 内核模块示例（示例源码，勿直接生产加载）
+
+完整模块：[demos/kmod_list_example.c](./demos/kmod_list_example.c) + [demos/Makefile.example](./demos/Makefile.example)。
+
+```bash
+cd locks-and-ds/demos
+make -f Makefile.example   # 需要 /lib/modules/$(uname -r)/build
+# sudo insmod kmod_list_example.ko && dmesg | tail
+# sudo rmmod kmod_list_example
+```
+
+模块里用真正的 `LIST_HEAD` / `list_add_tail` / `list_for_each_entry_safe`，在 `dmesg` 里打印 `id=`。
+
+
 *下一节：红黑树、xarray、maple tree、IDR——链表不够用时的容器。*
