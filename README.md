@@ -11,9 +11,10 @@
 
 | 笔记 | 说明 |
 |------|------|
-| [process-management/](./process-management/) | **进程管理（大章）**：总览与 `CLONE_*`、`task_struct`、PID/pidns、fork/clone、内核线程、exec、exit/回收、上下文切换入口、信号、观测清单。调度选人算法（EEVDF）另章。 |
+| [process-management/](./process-management/) | **进程管理（大章）**：总览与 `CLONE_*`、`task_struct`、PID/pidns、fork/clone、内核线程、exec、exit/回收、上下文切换入口、信号、观测清单。调度选人算法（EEVDF）见 scheduler。 |
 | [locks-and-ds/](./locks-and-ds/) | **同步原语与内核数据结构（大章）**：读内核够用的 C、`list_head`/hlist、树与映射容器、atomic/refcount、spinlock、mutex/rwsem/seqlock、RCU、lockdep 与踩坑。面向 C 新手补嵌入式链表与宏。 |
 | [cgroup/](./cgroup/) | **控制组（大章）**：cgroup v2 core 与对象模型、层次接口、fork/exit 挂钩与 cgroup ns、cpu/cpuset、memory、io/pids/freezer、PSI/rstat、本机观测。完整调度/MM/块层另章。 |
+| [scheduler/](./scheduler/) | **调度（大章）**：调度类链、`rq`/`cfs_rq`/`sched_entity`、EEVDF、入队与唤醒、负载均衡、cgroup cpu 衔接、RT/DL/sched_ext 边界、观测与性能分析配方。 |
 
 ### 进程管理子章节
 
@@ -61,6 +62,21 @@
 | [07-io-pids-misc.md](./cgroup/07-io-pids-misc.md) | io / pids / freezer / 其它 |
 | [08-psi-rstat.md](./cgroup/08-psi-rstat.md) | PSI 与 rstat |
 | [09-observability.md](./cgroup/09-observability.md) | 观测与本机实测 |
+
+### 调度子章节
+
+| 文件 | 内容 |
+|------|------|
+| [README.md](./scheduler/README.md) | 章节目录、阅读顺序、边界 |
+| [01-overview.md](./scheduler/01-overview.md) | 总览与调度类链 |
+| [02-core-objects.md](./scheduler/02-core-objects.md) | rq / cfs_rq / sched_entity / task_group |
+| [03-eevdf.md](./scheduler/03-eevdf.md) | EEVDF 选人 |
+| [04-enqueue-wakeup.md](./scheduler/04-enqueue-wakeup.md) | 入队出队与 ttwu |
+| [05-load-balance.md](./scheduler/05-load-balance.md) | PELT 与负载均衡 |
+| [06-other-classes.md](./scheduler/06-other-classes.md) | RT / DL / idle / stop / sched_ext |
+| [07-cgroup-cpu.md](./scheduler/07-cgroup-cpu.md) | 与 cgroup cpu 衔接 |
+| [08-observability.md](./scheduler/08-observability.md) | 观测与本机实测 |
+| [09-perf-analysis.md](./scheduler/09-perf-analysis.md) | 性能分析配方 |
 
 ## 约定
 

@@ -1,0 +1,20 @@
+#!/usr/bin/env bpftrace
+/* RECIPE: wakeup → sched_switch latency histogram (us)
+ * Needs: bpftrace, CAP_BPF/root, sched tracepoints.
+ * Not executed on notes author's box (bpftrace absent).
+ */
+tracepoint:sched:sched_wakeup,
+tracepoint:sched:sched_wakeup_new
+{
+	@wake_ts[args->pid] = nsecs;
+}
+
+tracepoint:sched:sched_switch
+{
+	$next = args->next_pid;
+	if (@wake_ts[$next]) {
+		$us = (nsecs - @wake_ts[$next]) / 1000;
+		@wakeup_to_run_us = hist($us);
+		delete(@wake_ts[$next]);
+	}
+}
