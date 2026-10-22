@@ -1,0 +1,4 @@
+*.o
+*.ko
+linux/
+.DS_Store
