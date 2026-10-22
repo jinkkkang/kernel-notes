@@ -211,7 +211,59 @@ sudo rmmod kmod_slab_cache
 
 ---
 
-## 4.7 关键函数表
+## 4.7 page_frag：一页里切小块
+
+**结论**：网络栈收发包要大量几十到几百字节的缓冲，按对象走 slab 太碎，按页走 buddy 又浪费。`struct page_frag_cache` 拿一页（或几页），从高位往下切，用一个偏置过的 page refcount 避免每切一块就原子改 `_refcount`。
+
+这不是 SLUB。SLUB 的对象大小在建 cache 时定死；page frag 的每次分配长度由调用者给。
+
+`include/linux/mm_types_task.h`。
+
+`struct page_frag`（`:36`）是「已经切出来的一块」：
+
+| 成员 | 条件 | 中文 |
+|---|---|---|
+| `struct page *page` | 始终 | 这块所在的页 |
+| `__u32 offset` | `BITS_PER_LONG > 32` 或 `PAGE_SIZE >= 65536` | 页内偏移 |
+| `__u32 size` | 同上 | 这块的长度 |
+| `__u16 offset` / `__u16 size` | 其余配置 | 同一对字段，窄一点 |
+
+`struct page_frag_cache`（`:49`）是分配游标，挂在任务或 per-CPU 上：
+
+| 成员 | 条件 | 中文 |
+|---|---|---|
+| `unsigned long encoded_page` | 始终 | 虚拟地址、pfmemalloc 位、order 挤在一个字里 |
+| `__u16 offset` | `PAGE_SIZE < PAGE_FRAG_CACHE_MAX_SIZE` 且 `BITS_PER_LONG <= 32` | 下一块从哪切 |
+| `__u16 pagecnt_bias` | 同上 | 还没从 `_refcount` 里扣掉的预支引用 |
+| `__u32 offset` / `__u32 pagecnt_bias` | 其余配置 | 同上，宽一点 |
+
+`PAGE_FRAG_CACHE_MAX_SIZE`（`:47`）把 32768 按页对齐。`PAGE_FRAG_CACHE_MAX_ORDER` 是这个尺寸的阶。
+
+```c
+/* mm/page_frag_cache.c:93 */
+void *__page_frag_alloc_align(struct page_frag_cache *nc,
+			      unsigned int fragsz, gfp_t gfp_mask,
+			      unsigned int align_mask)
+{
+	/* encoded_page 空：向 buddy 补一页（或高阶页） */
+	if (unlikely(!nc->encoded_page)) {
+		page = __page_frag_cache_refill(nc, gfp_mask); /* :49 */
+		/* 一次加上 PAGE_FRAG_CACHE_MAX_SIZE 个引用，后面只减 bias */
+		page_ref_add(page, PAGE_FRAG_CACHE_MAX_SIZE);
+		nc->pagecnt_bias = PAGE_FRAG_CACHE_MAX_SIZE + 1;
+		nc->offset = 0;
+	}
+	/* offset 按 align_mask 对齐。放不下就 refill 或把当前页的引用扣实 */
+}
+```
+
+bias 的意思：分配时只动 cache 行上的 `offset` / `pagecnt_bias`，不碰 `page->_refcount`。bias 耗尽或换页时，再一次性 `page_ref_sub`。注释（`:109-111`）写明不能用 `atomic_set` 去改引用，否则会弄坏 `get_page_unless_zero` 的使用者。
+
+调用者用完一块要 `page_frag_free`（或 skb 那条自己的释放）。把整页交给别人之后，不要再从同一个 cache 往下切。
+
+---
+
+## 4.8 关键函数表
 
 | 符号 | 位置 | 作用 |
 |---|---|---|
@@ -235,6 +287,8 @@ sudo rmmod kmod_slab_cache
 | `cache_has_sheaves` | `slab.h:302` | 是不是真 sheaf |
 | `get_slabinfo` | `slab.h:519` | 填 `/proc/slabinfo` |
 | `kmem_cache_charge` | `slub.c:5037` | 对象事后 charge 到 memcg |
+| `__page_frag_alloc_align` | `mm/page_frag_cache.c:93` | 从 page frag cache 切一块 |
+| `__page_frag_cache_refill` | `page_frag_cache.c:49` | cache 空了向 buddy 要页 |
 
 ---
 

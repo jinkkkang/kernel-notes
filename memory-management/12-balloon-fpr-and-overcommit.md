@@ -119,6 +119,19 @@ FPR 是持续的、和 buddy 合并挂钩的；hint 是一轮一轮的。两个�
 
 KSM（`mm/ksm.c`）把内容相同的匿名页合成一页，写时再拆开（COW）。线程是 `ksm_scan_thread`（`:2836`），每轮 `ksm_do_scan`（`:2815`）。
 
+`ksm_scan_thread` 把自己标成 freezable，nice 5。循环里拿 `ksm_thread_mutex`，先 `wait_while_offlining`，再看 `ksmd_should_run`（`:2831`）：`ksm_run & KSM_RUN_MERGE` 且 `ksm_mm_head` 非空。该跑就 `ksm_do_scan(ksm_thread_pages_to_scan)`。跑完按 `ksm_thread_sleep_millisecs` 睡；不该跑就睡在 `ksm_thread_wait` 上，等 run 位或 kthread stop。
+
+```text
+ksm_do_scan(scan_npages)                  # ksm.c:2815
+  while 还没扫够，且当前线程没在 freezing：
+    cond_resched
+    rmap_item = scan_get_next_rmap_item(&page)   # 下一个候选匿名页
+    没有了：return                          # 这一轮 mm 链表走完，seqnr++ 在 scan_get_next_rmap_item 末尾
+    cmp_and_merge_page(page, rmap_item)   # 和稳定树里的页比，相同就合并
+    put_page(page)
+    ksm_pages_scanned++
+```
+
 进程要 `madvise(MADV_MERGEABLE)` 或全局 `merge_across_nodes`。`ksm_madvise` 在 `:3010`。
 
 和超卖的关系：宿主开 KSM，扫的是 qemu 进程的匿名页。两个 guest 里相同的零页或相同的代码页可以合成一页。写的时候拆开，延迟尖刺和内存突然涨是成对出现的。
@@ -169,7 +182,7 @@ balloon inflate 从 guest buddy 拿页。guest 若开着 THP，inflate 会把高
 | `atomic64_t offline_size` / `uint64_t offline_threshold` | 还没 online 的大小。默认阈值 1GB（`:154`），避免插得太快把系统插到 OOM |
 | `bool in_sbm` | 真表示走 sub-block 模式，否则 big-block |
 
-插上的内存要经过内存热插拔：`add_memory` → online → 页进 buddy。拔的时候要 offline，不可移动页会让 offline 失败。这就是 `ZONE_MOVABLE` 存在的原因（[02](./02-physical-layout.md)）：把可拔的范围限制成可移动分配。
+插上的内存要经过内存热插拔：`add_memory` → online → 页进 buddy。拔的时候要 offline，不可移动页会让 offline 失败。`ZONE_MOVABLE` 把可拔的范围限制成可移动分配（zone 本身见 [02](./02-physical-layout.md)，online/offline 的函数在 12.9）。
 
 virtio-mem 改变的是 guest 的 `MemTotal`。balloon 不改变 memmap 的范围，只是把页从可用里扣掉（若 `adjust_managed_page_count`）。FPR 两者都不改。
 
@@ -210,7 +223,64 @@ grep . /sys/devices/system/memory/memory*/state
 
 ---
 
-## 12.9 关键函数表
+## 12.9 内存热插拔：online / offline 与 `ZONE_MOVABLE`
+
+**结论**：热插拔以 memory block 为单位，块里是整数个 section（`memmap_on_memory` 例外，它先留一段 pageblock 对齐的 vmemmap）。`online_pages` 把 PFN 段挂进某个 zone 的 buddy；`offline_pages` 先隔离，再把还能动的页迁走，迁不走就失败。virtio-mem 走的就是这两条，气球不走。
+
+选 zone 的函数是 `zone_for_pfn_range`（`mm/memory_hotplug.c:1045`）：
+
+| `online_type` | 落到哪 |
+|---|---|
+| `MMOP_ONLINE_KERNEL` | `default_kernel_zone_for_pfn` |
+| `MMOP_ONLINE_MOVABLE` | 该 node 的 `ZONE_MOVABLE`（`:1053`） |
+| `ONLINE_POLICY_AUTO_MOVABLE` | `auto_movable_zone_for_pfn`。注释（`:164`）写：配置允许时 online 到 `ZONE_MOVABLE` |
+| 其余 | `default_zone_for_pfn`（`:1021`）。区间只和一个 zone 相交就继承那个 zone；都不相交或两个重叠时，只有 `movable_node` 打开才用 `ZONE_MOVABLE`，否则用 kernel zone |
+
+`movable_node` 是 early_param（`:1941`，`cmdline_parse_movable_node`）。默认 online 类型在 `mhp_default_online_type`（`:225`），`mhp_get_default_online_type`（`:226`）在还没人设置时按编译选项填 `MMOP_OFFLINE` / `MMOP_ONLINE` / `MMOP_ONLINE_KERNEL` / `MMOP_ONLINE_MOVABLE`。
+
+```text
+online_pages(pfn, nr_pages, zone, group)  # memory_hotplug.c:1140
+  要求 pageblock 对齐，且结束于 section 边界，否则 -EINVAL
+  move_pfn_range_to_zone(..., MIGRATE_MOVABLE)
+  节点第一次有内存：node_notify(NODE_ADDING_FIRST_MEMORY)
+  memory_notify(MEM_GOING_ONLINE)
+  zone 还没 populated：记一笔，后面 build_all_zonelists
+  online_pages_range                      # 页进入 buddy
+  adjust_present_page_count
+  该 node 置 N_MEMORY；zone 不超过 ZONE_NORMAL 时再置 N_NORMAL_MEMORY
+  undo_isolate_page_range                 # 允许分配
+
+offline_pages(start_pfn, nr_pages, zone, group)  # :1955，要拿着 mem_hotplug_lock 写锁
+  同样的对齐检查
+  walk_system_ram_range 对不上 nr_pages：有洞，-EINVAL
+  起止页不在同一个 zone：-EINVAL
+  zone_pcp_disable + lru_cache_disable    # 隔离和 PCP 释放不能赛跑
+  start_isolate_page_range(..., PB_ISOLATE_MODE_MEM_OFFLINE)
+  memory_notify(MEM_GOING_OFFLINE)
+  内层循环：
+    scan_movable_pages                    # :1799
+      找到 LRU 页或带 movable_ops 的页：返回 0
+      PageOffline 且还有引用、又没有 movable_ops：-EBUSY（:1819）
+      扫完没有可迁页：-ENOENT（:1840）
+    返回 0：do_migrate_range              # :1846，void
+      migrate_pages(..., MIGRATE_SYNC, MR_MEMORY_HOTPLUG)  # :1920
+      失败只 putback。调用点 :2073 不看返回值
+      :2070 的 TODO 写着致命失败本应退出，当前没有
+    返回值既不是 0 也不是 -ENOENT：当不可移动页，offline 失败
+  -ENOENT 之后：dissolve_free_hugetlb_folios，再 test_pages_isolated
+    隔离检查失败就再来一轮
+  __offline_isolated_pages                # :2099，从 buddy 摘下空闲页
+  adjust_present_page_count(..., -nr_pages)  # :2116
+  zone 不再 populated：zone_pcp_reset，build_all_zonelists（:2138）
+```
+
+`ZONE_MOVABLE` 上的页必须能迁。`scan_movable_pages` 把「`PageOffline`、没有 movable_ops、引用还在」的页当成 `-EBUSY`（`:1819`），offline 就此失败。要能拔的内存，online 时就得进 `ZONE_MOVABLE`，并且上面不要放不可移动的分配。`do_migrate_range` 优先把页迁到别的 node（`:1917` 清掉本 node）；没有别的在线 node 时才允许迁回本 node。
+
+userspace 看块状态：`/sys/devices/system/memory/memory*/state`。字符串表在 `drivers/base/memory.c:36`，`MMOP_ONLINE_MOVABLE` 对应 `"online_movable"`。
+
+---
+
+## 12.10 关键函数表
 
 | 符号 | 位置 | 作用 |
 |---|---|---|
@@ -225,6 +295,14 @@ grep . /sys/devices/system/memory/memory*/state
 | `ksm_scan_thread` | `mm/ksm.c:2836` | KSM 线程 |
 | `ksm_do_scan` | `:2815` | 一轮扫描 |
 | `ksm_madvise` | `:3010` | `MADV_MERGEABLE` |
+| `ksmd_should_run` | `:2831` | `KSM_RUN_MERGE` 且 mm 链表非空 |
+| `scan_get_next_rmap_item` | `mm/ksm.c:2610` | 取下一个候选页。`ksm_do_scan` 在 `:2822` 调用 |
+| `cmp_and_merge_page` | `:2276` | 和稳定树比较并合并。调用点 `:2825` |
+| `online_pages` | `mm/memory_hotplug.c:1140` | 一段 PFN online 进 zone |
+| `offline_pages` | `:1955` | 隔离、迁移、摘下 |
+| `zone_for_pfn_range` | `:1045` | 按 online 类型选 zone |
+| `do_migrate_range` | `:1846` | offline 时迁走可移动页 |
+| `scan_movable_pages` | `:1799` | 找下一段可迁页 |
 
 ---
 

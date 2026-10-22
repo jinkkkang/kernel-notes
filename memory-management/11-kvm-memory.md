@@ -291,7 +291,111 @@ L2 的 GPA（从 L0 看是 nGPA）要先翻译成 L1 的 GPA，再翻译成 HPA�
 
 ---
 
-## 11.8 关键函数表
+## 11.8 `mmu_notifier`：宿主改页表时拆掉 EPT
+
+**结论**：KVM 在 `struct kvm` 里嵌了一个 `struct mmu_notifier`（`include/linux/kvm_host.h:851`）。宿主 munmap、迁移、mprotect、回收清 young 时，回调进 `virt/kvm/kvm_main.c` 的 `kvm_mmu_notifier_ops`（`:879`），把对应 HVA 上的 EPT/NPT 拆掉或清 accessed。不注册这个回调，宿主把页换走之后 guest 仍可能从旧 EPT 访问那一页。
+
+`kvm_init_mmu_notifier` 在 `:888`。填进去的回调：
+
+| ops 成员 | KVM 函数 | 行 |
+|---|---|---|
+| `invalidate_range_start` | `kvm_mmu_notifier_invalidate_range_start` | `:722` |
+| `invalidate_range_end` | `kvm_mmu_notifier_invalidate_range_end` | `:798` |
+| `clear_flush_young` | `kvm_mmu_notifier_clear_flush_young` | `:829` |
+| `clear_young` | `kvm_mmu_notifier_clear_young` | `:838` |
+| `test_young` | `kvm_mmu_notifier_test_young` | `:859` |
+| `release` | `kvm_mmu_notifier_release` | `:868`，里面 `kvm_flush_shadow_all` |
+
+KVM 没填 `arch_invalidate_secondary_tlbs`、`alloc_notifier`、`free_notifier`。
+
+### `struct mmu_notifier_ops`（`include/linux/mmu_notifier.h:64`）
+
+回调都可以是 NULL。头文件注释写了配对和睡眠限制，下面只记每个指针干什么。
+
+| 成员 | 中文 |
+|---|---|
+| `void (*release)(struct mmu_notifier *subscription, struct mm_struct *mm)` | mm 销毁（`exit_mmap`）或 `mmu_notifier_unregister` 时调用，在页被释放之前。要拆掉全部二级映射并冻住二级 MMU。可以和 mm 外的其它回调并发 |
+| `bool (*clear_flush_young)(..., unsigned long start, unsigned long end)` | 主 MMU 清 young/accessed 之后调用。二级页表也要 test-and-clear，并且刷二级 TLB。返回值表示二级映射是否年轻。start/end 是因为二级粒度可以比主页表更细 |
+| `bool (*clear_young)(...)` | 同上，允许不刷二级 TLB。KVM 的 `clear_young` 注释（`kvm_main.c:850` 一带）写明当前不从这里发二级 TLB 刷新 |
+| `bool (*test_young)(..., unsigned long address)` | 只查询二级 PTE 的 young，不清、不拆 |
+| `int (*invalidate_range_start)(..., const struct mmu_notifier_range *range)` | 区间里的页都还映射着，refcount 至少 1。返回前调用者不能再使用这个区间的 SPTE。`MMU_NOTIFIER_RANGE_BLOCKABLE` 没置位时不能睡眠，需要睡眠就返回 `-EAGAIN`。能失败的 start 不允许再实现 end |
+| `void (*invalidate_range_end)(...)` | 区间已经解映射，VM 已经把页释放。start 到 end 之间页表项会被拆掉。驱动若要保住页，必须在 start（或最初映射时）把 refcount 抬住 |
+| `void (*arch_invalidate_secondary_tlbs)(..., unsigned long start, unsigned long end)` | 和 CPU 共享页表的非 CPU TLB。在持 PTL 时调用，不能睡眠。实现了这个就不要再实现 start/end |
+| `struct mmu_notifier *(*alloc_notifier)(struct mm_struct *mm)` | get/put 接口下分配一个 notifier |
+| `void (*free_notifier)(struct mmu_notifier *subscription)` | 引用全放掉、没有回调在跑之后，从 SRCU 回调里调用，不能睡眠 |
+
+### `struct mmu_notifier`（`:228`）
+
+| 成员 | 中文 |
+|---|---|
+| `struct hlist_node hlist` | 挂到这个 mm 的 notifier 链上。链的修改要同时拿 mmap_lock 和反向映射锁 |
+| `const struct mmu_notifier_ops *ops` | 上面那张回调表 |
+| `struct mm_struct *mm` | 被监视的地址空间 |
+| `struct rcu_head rcu` | 延迟释放 |
+| `unsigned int users` | get/put 引用 |
+
+### `enum mmu_notifier_event`（`:51`）
+
+| 值 | 头文件注释里的原因 |
+|---|---|
+| `MMU_NOTIFY_UNMAP` | `munmap`，或 `mremap` 把区间搬走 |
+| `MMU_NOTIFY_CLEAR` | 清页表项：`madvise`、一页换成另一页等 |
+| `MMU_NOTIFY_PROTECTION_VMA` | `mprotect`。按 VMA 的 `vm_page_prot` 更新整个区间即可 |
+| `MMU_NOTIFY_PROTECTION_PAGE` | 单页读写位变化。end 回调里要自己看 CPU 页表 |
+| `MMU_NOTIFY_SOFT_DIRTY` | soft-dirty 记账，页和访问位都没变。end 回调里要把二级映射也标脏 |
+| `MMU_NOTIFY_RELEASE` | mm refcount 到 0，区间不再可访问。给 interval notifier 的 invalidate 用 |
+| `MMU_NOTIFY_MIGRATE` | `migrate_vma_collect` 期间。`owner` 对得上设备私有 pgmap 时，驱动可以忽略这次失效 |
+| `MMU_NOTIFY_EXCLUSIVE` | 页表项转成 device-exclusive。`owner` 是 `make_device_exclusive()` 的调用者，用来过滤 |
+
+`MMU_NOTIFIER_RANGE_BLOCKABLE` 是 `flags` 的 bit 0（`:62`）。
+
+### `struct mmu_notifier_range`
+
+`CONFIG_MMU_NOTIFIER` 下（`:304`）：
+
+| 成员 | 中文 |
+|---|---|
+| `struct mm_struct *mm` | 哪个地址空间 |
+| `unsigned long start` | 区间起（含） |
+| `unsigned long end` | 区间止（不含） |
+| `unsigned flags` | 含 `MMU_NOTIFIER_RANGE_BLOCKABLE` |
+| `enum mmu_notifier_event event` | 上面的原因 |
+| `void *owner` | 迁移 / exclusive 时用来过滤的设备所有者 |
+
+没编 `CONFIG_MMU_NOTIFIER` 时（`:559`）这个结构只剩 `start` 和 `end`。`mmu_notifier_range_init` 变成只填这两个字段的宏（`:572`）。
+
+`mm_has_notifiers`（`:313`）看 `mm->notifier_subscriptions`。KVM 注册之后这个指针非空，unmap / 保护位变化才会走到二级 MMU。
+
+---
+
+## 11.9 HMM：`hmm_range_fault`
+
+**结论**：HMM 让设备按 CPU 页表的视图取 PFN，同时用 `mmu_interval_notifier` 盯着这段虚拟地址。区间在 fault 过程中被拆掉，调用者必须丢掉这次拿到的 PFN 重来。它不给设备建影子页表，影子页表仍是 KVM 那条路。
+
+### `struct hmm_range`（`include/linux/hmm.h:111`）
+
+| 成员 | 中文 |
+|---|---|
+| `struct mmu_interval_notifier *notifier` | 罩住 start/end 的 interval notifier。失效序号从它来 |
+| `unsigned long notifier_seq` | `mmu_interval_read_begin()` 的返回值。walk 之后对不上就说明区间失效了 |
+| `unsigned long start` | 虚拟地址起，含 |
+| `unsigned long end` | 虚拟地址止，不含 |
+| `unsigned long *hmm_pfns` | 输出数组，长度要盖住整个区间。每一项是 PFN 加 HMM 标志 |
+| `unsigned long default_flags` | 这一段的默认标志（读、写等，见 `Documentation/mm/hmm.rst`） |
+| `unsigned long pfn_flags_mask` | 掩掉 pfn 自带的标志，让 `default_flags` 说了算 |
+| `void *dev_private_owner` | device private 页的 owner。对得上的页按设备自己的页处理 |
+
+`hmm_range_fault`（`mm/hmm.c:762`）要求调用者已经拿着 mmap lock，返回时锁还在。函数体就是 `return hmm_range_fault_locked(range, NULL);`。注释写明：它和 `get_user_pages` 类似，但可以只读页表、不把缺页做成对页表的修改；新代码应改用 `hmm_range_fault_unlocked_timeout`（`:788`），除非必须把 mmap lock 一直拿在手里。这个 locked 版本伺候不了会放下 mmap lock 的 fault handler。
+
+`hmm_range_fault_unlocked_timeout` 自己拿 mmap 读锁。锁被放下或区间失效时，它刷新 `notifier_seq` 再走一遍。`timeout` 为 0 表示一直重试。非 0 是调用者自己的预算，超时返回 `-EBUSY`，不会把已经在进行的缺页打断。`HMM_RANGE_DEFAULT_TIMEOUT` 是 1000（毫秒，`:136`）。
+
+`hmm_pfn_to_map_order`（`:94`）从 hmm_pfn 里取出映射阶，调用前要先确认 `HMM_PFN_VALID`。
+
+ZONE_DEVICE 页怎么迁移、GPU 的 device private 状态机，本节没有展开。入口就是上面这个 range。
+
+---
+
+## 11.10 关键函数表
 
 | 符号 | 位置 | 作用 |
 |---|---|---|
@@ -307,6 +411,10 @@ L2 的 GPA（从 L0 看是 nGPA）要先翻译成 L1 的 GPA，再翻译成 HPA�
 | `kvm_tdp_mmu_page_fault` | `:4941` | TDP MMU |
 | `kvm_tdp_mmu_map` | `arch/x86/kvm/mmu/tdp_mmu.c:1217` | 把 PFN 写入 EPT。`kvm_tdp_mmu_page_fault` 在 `:4967` 调用它 |
 | `kvm_mmu_faultin_pfn` | `arch/x86/kvm/mmu/mmu.c:4694` | HVA 缺页，拿到 PFN。调用点在 `:4957` |
+| `kvm_mmu_notifier_ops` | `virt/kvm/kvm_main.c:879` | KVM 注册的 mmu_notifier 回调表 |
+| `kvm_init_mmu_notifier` | `:888` | 把 notifier 挂到 kvm |
+| `hmm_range_fault` | `mm/hmm.c:762` | 按 CPU 页表填 `hmm_pfns`，调用者持 mmap lock |
+| `hmm_range_fault_unlocked_timeout` | `:788` | 自己拿锁，失效了内部重试 |
 
 ---
 

@@ -121,7 +121,55 @@ memcg 有自己的回写域（`cgwb`）。接口和 charge 在 [cgroup/06-memory
 
 ---
 
-## 8.4 关键函数表
+## 8.4 shmem：匿名，又能 swap 的页缓存
+
+**结论**：tmpfs、SysV shm、memfd、`MAP_SHARED|MAP_ANONYMOUS` 都是 shmem。对用户它像匿名内存，没有磁盘文件；对内核它是页缓存，folio 挂在 `address_space` 上，内存紧了可以整页换出。换出之后 xarray 里留下 swap 项，不是空洞。
+
+`MAP_SHARED` 且没有 `struct file` 时，选地址就改走 `shmem_get_unmapped_area`（`mm/mmap.c:845` 的注释写明 `mmap_region` 会建文件）。建 VMA 时 `shmem_zero_setup`（`mm/vma.c:2693`，实现 `mm/shmem.c:5911`）造一个内部 shmem 文件，挂到 `vma->vm_file`。从这一刻起它按文件映射缺页，不再走 `do_anonymous_page`。
+
+`struct shmem_inode_info`（`include/linux/shmem_fs.h:34`）嵌在 inode 里，用 `SHMEM_I(inode)` 从 `vfs_inode` 反查（`:93`）：
+
+| 成员 | 条件 | 中文 |
+|---|---|---|
+| `spinlock_t lock` | 始终 | 保护下面的计数和链表 |
+| `unsigned int seals` | 始终 | memfd seal（`F_SEAL_*`） |
+| `unsigned long flags` | 始终 | `SHMEM_F_NORESERVE`（不预记账）、`SHMEM_F_LOCKED`（不许 swap）、`SHMEM_F_MAPPING_FROZEN`（不许长大、缩小、打洞） |
+| `unsigned long alloced` | 始终 | 已经分给这个文件的数据页 |
+| `unsigned long swapped` | 始终 | 其中正在 swap 上的页 |
+| `struct offset_ctx dir_offsets` | 与下一组同 union | 目录的稳定偏移 |
+| `struct list_head shrinklist` | 同 union | 可收缩的大页 inode |
+| `struct list_head swaplist` | 同 union | 可能在 swap 上的链 |
+| `struct timespec64 i_crtime` | 始终 | 创建时间 |
+| `struct shared_policy policy` | 始终 | 这段 shmem 的 NUMA 策略。`shared_policy` 的成员在 [03](./03-buddy.md) 的 3.8 |
+| `struct list_head xattrs` | 始终 | xattr |
+| `pgoff_t fallocend` | 始终 | `fallocate` 到过的最大下标 |
+| `unsigned int fsflags` | 始终 | `FS_IOC_GETFLAGS` / `SETFLAGS` |
+| `atomic_t stop_eviction` | 始终 | 非 0 时先别把这个 inode 换出去 |
+| `struct dquot __rcu *i_dquot[MAXQUOTAS]` | `CONFIG_TMPFS_QUOTA` | 配额 |
+| `struct inode vfs_inode` | 始终 | 嵌进去的 VFS inode，必须能 `container_of` |
+
+缺页入口 `shmem_fault`（`mm/shmem.c:2713`）进 `shmem_get_folio_gfp`（`:2431`）：
+
+```text
+filemap_get_entry(mapping, index)          # 页缓存里找
+  xarray 里是值（swap 项）→ shmem_swapin_folio   # :2257
+       换入后标脏：一页不能同时活在 swap 和页缓存里（函数注释 :2426）
+  没有 → shmem_alloc_and_add_folio          # :1942
+       新页不标脏，等写路径自己标
+userfaultfd minor：页已在，把事件交给用户态，不在这里装 PTE
+```
+
+`sgp` 是用途。`SGP_WRITE` 会把新 folio 当即将写满来处理（`:2564` 一带）。`SGP_CACHE` 且下标已经超出 `i_size`，直接 `-EINVAL`（`:2448`）。
+
+换出时 `swapped` 加、页缓存里改成 swap 项。`SHMEM_F_LOCKED` 或挂载 `noswap`（`shmem_sb_info.noswap`，`shmem_fs.h:82`）则回收跳过它。`RssShmem` 记的是还在内存里的这部分，换出的进 `Swap`。
+
+### memfd 跨 kexec 保留
+
+`Documentation/mm/memfd_preservation.rst` 指到 `mm/memfd_luo.c`。这是 Live Update：kexec 之前把 memfd 的 folio 交给 KHO，下一个内核按同一份 ABI 拿回来。`memfd_luo_preserve`（`:258`）先 `shmem_freeze(inode, true)`，再 `kho_alloc_preserve` 分配序列化头。序列化格式是 `struct memfd_luo_ser`，契约在 `include/linux/kho/abi/memfd.h`。脏页标志 `MEMFD_LUO_FOLIO_DIRTY`（`:37`）表示用户写过；只 `fallocate` 没写的不算脏。没编 LUO/KHO 时这个文件不参与编译。它不改变 shmem 的缺页路径。
+
+---
+
+## 8.5 关键函数表
 
 | 符号 | 位置 | 作用 |
 |---|---|---|
@@ -133,6 +181,11 @@ memcg 有自己的回写域（`cgwb`）。接口和 charge 在 [cgroup/06-memory
 | `balance_dirty_pages_ratelimited` | `mm/page-writeback.c:2100` | 写路径脏页限速 |
 | `balance_dirty_pages_ratelimited_flags` | `:2030` | 带额外标志的同一逻辑 |
 | `shrink_folio_list` | `mm/vmscan.c:1058` | 回收时处理脏页和回写 |
+| `shmem_fault` | `mm/shmem.c:2713` | shmem 缺页 |
+| `shmem_get_folio_gfp` | `:2431` | 页缓存 / swap 换入 / 新分配 |
+| `shmem_swapin_folio` | `:2257` | 把 swap 项换回 folio |
+| `shmem_zero_setup` | `:5911` | 共享匿名映射接上 shmem 文件 |
+| `memfd_luo_preserve` | `mm/memfd_luo.c:258` | kexec 前保住 memfd |
 
 ---
 
