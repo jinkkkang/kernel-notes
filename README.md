@@ -85,7 +85,7 @@
 |------|------|
 | [README.md](./memory-management/README.md) | 章节目录、阅读顺序、与 cgroup/调度/VFS 边界 |
 | [01-overview.md](./memory-management/01-overview.md) | 物理线与虚拟线、总图 |
-| [02-physical-layout.md](./memory-management/02-physical-layout.md) | page / folio / node / zone / sparsemem / memblock |
+| [02-physical-layout.md](./memory-management/02-physical-layout.md) | page / folio / node / zone / buddy / sparsemem / memblock |
 | [03-00-page-alloc.md](./memory-management/03-00-page-alloc.md) | 页分配：调用链、GFP/scope、水位、PCP、释放合并、慢路径、高阶与 compaction、mempolicy、CMA。 |
 | [04-slab.md](./memory-management/04-slab.md) | SLUB sheaf 与 `kmem_cache`、page frag |
 | [05-vmalloc-and-kernel-va.md](./memory-management/05-vmalloc-and-kernel-va.md) | vmalloc、highmem、`kmap_local`、VMAP_STACK |

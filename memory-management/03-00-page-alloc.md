@@ -2,6 +2,8 @@
 
 **结论**：v7.3 没有名叫 `__alloc_pages` 的 C 函数。宏 `__alloc_pages()`（`mm/page_alloc.h:259`）进 `__alloc_pages_noprof`。快路径只扫 zonelist 上水位够的 zone，从 per-CPU 列表或 buddy 拿页；不够才进 slowpath：唤醒 kswapd、直接回收、直接 compact，最后才可能 OOM。
 
+阶、伙伴地址、拆开和合并的图在 [02 的 buddy 概念](./02-physical-layout.md#25-buddy-概念)。本目录从 `rmqueue` 和 `__free_one_page` 的调用链写起。
+
 > 主文件：`mm/page_alloc.c`。水位在 `struct zone._watermark[]`。
 > 内核版本：**v7.3**（`c03c1a14507d`）。行号对这棵树。
 > 导航：[上一节 物理布局](./02-physical-layout.md) · [章目录](./README.md) · [下一篇 总入口](./03-01-overview.md)

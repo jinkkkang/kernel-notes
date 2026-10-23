@@ -5,7 +5,7 @@
 > `__free_one_page` 在 `mm/page_alloc.c:940`。`free_pages` 在 `:5589`，`__free_pages` 在 `:5565`。
 > 导航：[上一篇 PCP](./03-04-pcp-and-rmqueue.md) · [本目录](./03-00-page-alloc.md) · [下一篇 慢路径](./03-06-slowpath.md)
 
-旧笔记只在 `rmqueue` 那节提了一句合并。这里把释放路径补全。
+旧笔记只在 `rmqueue` 那节提了一句合并。这里把释放路径补全。阶、伙伴 PFN、拆开的图在 [02 §2.5](./02-physical-layout.md#25-buddy-概念)。
 
 ---
 
