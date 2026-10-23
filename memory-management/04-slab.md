@@ -4,7 +4,7 @@
 
 > `struct kmem_cache` 在 `mm/slab.h:240`。分配在 `mm/slub.c`。
 > 函数上方注释（`slub.c:4960` 附近）仍写 “lockless freelist”。函数体先调用 `alloc_from_pcs()`。以函数体为准。
-> 导航：[上一节 buddy](./03-buddy.md) · [目录](./README.md) · [下一节 vmalloc](./05-vmalloc-and-kernel-va.md)
+> 导航：[上一节 页分配](./03-page-alloc/README.md) · [目录](./README.md) · [下一节 vmalloc](./05-vmalloc-and-kernel-va.md)
 
 ---
 
@@ -292,4 +292,4 @@ bias 的意思：分配时只动 cache 行上的 `offset` / `pagecnt_bias`，不
 
 ---
 
-[上一节 buddy](./03-buddy.md) · [目录](./README.md) · [下一节 vmalloc](./05-vmalloc-and-kernel-va.md)
+[上一节 页分配](./03-page-alloc/README.md) · [目录](./README.md) · [下一节 vmalloc](./05-vmalloc-and-kernel-va.md)

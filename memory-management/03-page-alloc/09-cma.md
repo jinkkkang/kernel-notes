@@ -1,0 +1,73 @@
+# 3.9 CMA
+
+**结论**：CMA 在启动时划出物理连续的页，平时借给可移动分配用，设备要大块连续内存时再迁走借用者、把这块还回来。它解决的是「平时不能闲置一大块，驱动偶尔却要连续物理页」。
+
+> 区描述在 `mm/cma.h`。分配在 `mm/cma.c`。
+> 导航：[上一篇 NUMA](./08-numa-policy.md) · [本目录](./README.md) · [下一节 SLUB](../04-slab.md)
+
+一块区可以有多段物理范围（中间有洞），最多 `CMA_MAX_RANGES`（8，`mm/cma.h:38`）。
+
+## `struct cma_memrange`（`:27`）
+
+| 成员 | 条件 | 中文 |
+|---|---|---|
+| `unsigned long base_pfn` | 始终 | 这段的起始 PFN |
+| `unsigned long count` | 始终 | 这段有多少页 |
+| `unsigned long early_pfn` | 与 `bitmap` 同 union | 早期 `cma_reserve_early` 还没划走的第一个 PFN |
+| `unsigned long *bitmap` | 同 union | 运行时的分配位图。1 bit 代表 `1 << order_per_bit` 页 |
+| `struct debugfs_u32_array dfs_bitmap` | `CONFIG_CMA_DEBUGFS` | 把位图露到 debugfs |
+
+`struct cma_kobject`（`:9`）：`struct kobject kobj`、`struct cma *cma`。
+
+## `struct cma`（`:40`）
+
+| 成员 | 条件 | 中文 |
+|---|---|---|
+| `unsigned long count` | 始终 | 各 range 页数之和 |
+| `unsigned long available_count` | 始终 | 还没被 CMA 分配走的页 |
+| `unsigned int order_per_bit` | 始终 | 位图里 1 bit 对应的页阶 |
+| `spinlock_t lock` | 始终 | 位图和计数 |
+| `struct mutex alloc_mutex` | 始终 | 分配路径，避免并发在同一块里找空洞 |
+| `struct hlist_head mem_head` | `CONFIG_CMA_DEBUGFS` | debugfs 跟踪的已分配块 |
+| `spinlock_t mem_head_lock` | 同上 | 保护 `mem_head` |
+| `char name[CMA_MAX_NAME]` | 始终 | 区名，tracepoint 和失败日志用 |
+| `int nranges` | 始终 | `ranges` 里有效的段数 |
+| `struct cma_memrange ranges[CMA_MAX_RANGES]` | 始终 | 物理段 |
+| `atomic64_t nr_pages_succeeded` | `CONFIG_CMA_SYSFS` | 成功页数 |
+| `atomic64_t nr_pages_failed` | 同上 | 失败页数 |
+| `atomic64_t nr_pages_released` | 同上 | 放回页数 |
+| `struct cma_kobject *cma_kobj` | 同上 | sysfs 对象 |
+| `unsigned long flags` | 始终 | `CMA_RESERVE_PAGES_ON_ERROR`、`CMA_ZONES_VALID`、`CMA_ZONES_INVALID`、`CMA_ACTIVATED`（`:68`） |
+| `int nid` | 始终 | 所属 node。没指定时是 `NUMA_NO_NODE` |
+
+全局数组 `cma_areas[MAX_CMA_AREAS]`（`mm/cma.c:38`）。
+
+```text
+cma_alloc(cma, count, align, no_warn)     # cma.c:949
+  → cma_alloc_frozen                        # :924，gfp = GFP_KERNEL，no_warn 则加 __GFP_NOWARN
+       → __cma_alloc_frozen                 # :866
+            逐个 range 调 cma_range_alloc   # 位图里找连续的 count 页
+            成功：清 KASAN tag，CMA_ALLOC_SUCCESS
+            失败：CMA_ALLOC_FAIL，按 no_warn 决定要不要 pr_err
+  → set_pages_refcounted                    # 交给调用者之前把引用立上
+```
+
+`cma_alloc` 返回的页带正常引用。`cma_alloc_frozen` 留下的是 frozen（refcount 0），调用者自己负责立引用或走 frozen 释放。还回用 `cma_release`（`:1019`），内部 `free_contig_frozen_range` 再清位图。
+
+buddy 侧：可移动分配在 CMA 空闲超过 zone 一半时会先从 CMA 拿（[04](./04-pcp-and-rmqueue.md)）。CMA pageblock 的 migratetype 不能和普通块合并，这是高阶分配失败的原因之一（[07](./07-high-order-and-compaction.md)）。debugfs 在 `CONFIG_CMA_DEBUGFS` 下看位图；`vmstat` 里有 `cma_alloc_success` / `cma_alloc_fail`（`mm/vmstat.c:1402`）。
+
+---
+
+## 关键函数表
+
+| 符号 | 位置 | 作用 |
+|---|---|---|
+| `cma_alloc` | `mm/cma.c:949` | 从 CMA 区拿连续页 |
+| `cma_alloc_frozen` | `:924` | 同上，返回 frozen 页 |
+| `__cma_alloc_frozen` | `:866` | 位图查找 |
+| `cma_release` | `:1019` | 还回 CMA |
+| `__rmqueue_cma_fallback` | `mm/page_alloc.c:1940`（未编 CMA 时 `:1946` 是空的 inline） | 普通可移动分配向 CMA 借页。调用点 `:2480`、`:2503` |
+
+---
+
+[上一篇 NUMA](./08-numa-policy.md) · [本目录](./README.md) · [下一节 SLUB](../04-slab.md)

@@ -4,7 +4,7 @@
 
 > THP：`mm/huge_memory.c`、`mm/khugepaged.c`、`include/linux/huge_mm.h`。
 > hugetlb：`mm/hugetlb.c`。
-> 导航：[上一节 页缓存](./08-page-cache-and-writeback.md) · [目录](./README.md) · [下一节 回收](./10-reclaim.md)
+> 导航：[上一节 页缓存](./08-page-cache-and-writeback.md) · [目录](./README.md) · [下一节 回收](./10-reclaim/README.md)
 
 ---
 
@@ -200,4 +200,4 @@ __hugetlb_vmemmap_optimize_folio          # :521
 
 ---
 
-[上一节 页缓存](./08-page-cache-and-writeback.md) · [目录](./README.md) · [下一节 回收](./10-reclaim.md)
+[上一节 页缓存](./08-page-cache-and-writeback.md) · [目录](./README.md) · [下一节 回收](./10-reclaim/README.md)

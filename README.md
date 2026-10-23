@@ -86,14 +86,14 @@
 | [README.md](./memory-management/README.md) | 章节目录、阅读顺序、与 cgroup/调度/VFS 边界 |
 | [01-overview.md](./memory-management/01-overview.md) | 物理线与虚拟线、总图 |
 | [02-physical-layout.md](./memory-management/02-physical-layout.md) | page / folio / node / zone / sparsemem / memblock |
-| [03-buddy.md](./memory-management/03-buddy.md) | buddy、GFP、水位、PCP、mempolicy、CMA |
+| [03-page-alloc/](./memory-management/03-page-alloc/README.md) | 页分配：调用链、GFP/scope、水位、PCP、释放合并、慢路径、高阶与 compaction、mempolicy、CMA。旧 [03-buddy.md](./memory-management/03-buddy.md) 只跳转 |
 | [04-slab.md](./memory-management/04-slab.md) | SLUB sheaf 与 `kmem_cache`、page frag |
 | [05-vmalloc-and-kernel-va.md](./memory-management/05-vmalloc-and-kernel-va.md) | vmalloc、highmem、`kmap_local`、VMAP_STACK |
 | [06-mm-and-vma.md](./memory-management/06-mm-and-vma.md) | `mm_struct`、VMA、页表、TLB、rmap、overcommit |
 | [07-page-fault.md](./memory-management/07-page-fault.md) | 缺页：匿名、文件、COW、userfaultfd、hwpoison |
 | [08-page-cache-and-writeback.md](./memory-management/08-page-cache-and-writeback.md) | 页缓存、脏页、shmem |
 | [09-thp-and-hugetlb.md](./memory-management/09-thp-and-hugetlb.md) | THP、mTHP、hugetlb 预留、HVO |
-| [10-reclaim.md](./memory-management/10-reclaim.md) | LRU/MGLRU、kswapd、zswap、mlock、迁移、swap table、OOM |
+| [10-reclaim/](./memory-management/10-reclaim/README.md) | 回收：`scan_control`、经典 LRU、MGLRU 设计与路径、对照与开关、zswap、OOM、mlock、迁移、swap table。旧 [10-reclaim.md](./memory-management/10-reclaim.md) 只跳转 |
 | [11-kvm-memory.md](./memory-management/11-kvm-memory.md) | EPT/NPT、memslot、TDP MMU、mmu_notifier、HMM |
 | [12-balloon-fpr-and-overcommit.md](./memory-management/12-balloon-fpr-and-overcommit.md) | balloon、FPR、KSM、virtio-mem、内存热插拔 |
 | [13-observability.md](./memory-management/13-observability.md) | 本机 `/proc`、pagemap、DAMON、shrinker debugfs |

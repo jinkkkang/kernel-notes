@@ -12,14 +12,14 @@
 
 1. [总览](./01-overview.md)
 2. [物理布局：page / folio / node / zone / sparsemem](./02-physical-layout.md)
-3. [buddy 与页分配](./03-buddy.md)
+3. [页分配](./03-page-alloc/README.md)（旧 [03-buddy.md](./03-buddy.md) 只跳转）
 4. [SLUB](./04-slab.md)
 5. [vmalloc 与内核虚拟地址](./05-vmalloc-and-kernel-va.md)
 6. [mm 与 VMA](./06-mm-and-vma.md)
 7. [缺页](./07-page-fault.md)
 8. [页缓存与回写（只写内存侧）](./08-page-cache-and-writeback.md)
 9. [THP 与 hugetlb](./09-thp-and-hugetlb.md)
-10. [回收、swap、OOM](./10-reclaim.md)
+10. [回收、swap、OOM](./10-reclaim/README.md)（旧 [10-reclaim.md](./10-reclaim.md) 只跳转）
 11. [KVM 内存](./11-kvm-memory.md)
 12. [balloon、FPR 与超卖](./12-balloon-fpr-and-overcommit.md)
 13. [观测](./13-observability.md)
@@ -30,10 +30,10 @@
 ```text
 01 总览
   → 02 物理布局（page/zone/node，后面所有章的名词都在这）
-  → 03 buddy → 04 SLUB → 05 vmalloc
+  → 03 页分配（03-page-alloc/）→ 04 SLUB → 05 vmalloc
   → 06 mm/VMA → 07 缺页 → 08 页缓存
   → 09 THP/hugetlb
-  → 10 回收
+  → 10 回收（10-reclaim/，先总入口再经典 LRU，然后 MGLRU）
   → 11 KVM 二维页表 → 12 balloon/FPR
   → 13 观测 → 14 症状剧本
 ```
@@ -67,10 +67,10 @@
 - IOMMU、secretmem、mseal 的完整语义
 - 具体文件系统的 `address_space_operations`
 - 内核 percpu 分配器（`mm/percpu.c`）内部
-- memory tier、CXL 拓扑的完整策略（`numaperf` 只写了 `access_coordinate` 和 weighted interleave 的入口，在 [03](./03-buddy.md)）
+- memory tier、CXL 拓扑的完整策略（`numaperf` 只写了 `access_coordinate` 和 weighted interleave 的入口，在 [03-page-alloc/08](./03-page-alloc/08-numa-policy.md)）
 - ZONE_DEVICE 页迁移和 GPU 私有页的状态机（HMM 的 `hmm_range` 在 [11](./11-kvm-memory.md)，到 range API 为止）
 - DAMON scheme 的每种动作（上下文结构在 [13](./13-observability.md)）
-- swap 槽的分配、回收、cluster 锁状态机（`swap_table` 的项布局在 [10](./10-reclaim.md)，其余在 `mm/swapfile.c`）
+- swap 槽的分配、回收、cluster 锁状态机（`swap_table` 的项布局在 [10-reclaim/11](./10-reclaim/11-swap-table.md)，其余在 `mm/swapfile.c`）
 
 ## 审计 32 条落点
 
@@ -82,22 +82,22 @@
 | 4 | `pfn_to_page` 三种模型 | [02](./02-physical-layout.md) §2.8 |
 | 5 | folio refcount 与 mapcount | [02](./02-physical-layout.md) §2.9 |
 | 6 | `anon_vma` / rmap | [06](./06-mm-and-vma.md) §6.9 |
-| 7 | GFP scope API | [03](./03-buddy.md) §3.7 |
+| 7 | GFP scope API | [03-page-alloc/02](./03-page-alloc/02-gfp-and-scope.md)（旧 §3.7） |
 | 8 | overcommit 0/1/2 | [06](./06-mm-and-vma.md) §6.10 |
 | 9 | mmap_lock / per-VMA / PTL | [06](./06-mm-and-vma.md) §6.11 |
-| 10 | NUMA mempolicy | [03](./03-buddy.md) §3.8 |
-| 11 | mlock 与 unevictable | [10](./10-reclaim.md) §10.6 |
-| 12 | `migrate_pages` | [10](./10-reclaim.md) §10.7 |
+| 10 | NUMA mempolicy | [03-page-alloc/08](./03-page-alloc/08-numa-policy.md)（旧 §3.8） |
+| 11 | mlock 与 unevictable | [10-reclaim/09](./10-reclaim/09-mlock-unevictable.md)（旧 §10.6） |
+| 12 | `migrate_pages` | [10-reclaim/10](./10-reclaim/10-migration.md)（旧 §10.7） |
 | 13 | hugetlb `resv_map` | [09](./09-thp-and-hugetlb.md) §9.5 |
 | 14 | shmem | [08](./08-page-cache-and-writeback.md) §8.4 |
 | 15 | page_owner / alloc_tag | [14](./14-perf-and-dev-practice.md) §14.7 |
 | 16 | pagemap / soft-dirty / idle | [13](./13-observability.md) §13.9 |
-| 17 | zswap / zsmalloc | [10](./10-reclaim.md) §10.3 |
-| 18 | `oom_badness` | [10](./10-reclaim.md) §10.4 |
+| 17 | zswap / zsmalloc | [10-reclaim/07](./10-reclaim/07-swap-zswap.md)（旧 §10.3） |
+| 18 | `oom_badness` | [10-reclaim/08](./10-reclaim/08-oom.md)（旧 §10.4） |
 | 19 | `mmu_notifier` | [11](./11-kvm-memory.md) §11.8 |
-| 20 | CMA | [03](./03-buddy.md) §3.9 |
+| 20 | CMA | [03-page-alloc/09](./03-page-alloc/09-cma.md)（旧 §3.9） |
 | 21 | 内存热插拔 / `ZONE_MOVABLE` | [12](./12-balloon-fpr-and-overcommit.md) §12.9 |
-| 22 | MGLRU 代际老化 | [10](./10-reclaim.md) §10.1 |
+| 22 | MGLRU 代际老化 | [10-reclaim/05](./10-reclaim/05-mglru-code-path.md)（旧 §10.1；设计在 [04](./10-reclaim/04-mglru-design.md)） |
 | 23 | highmem / `kmap_local_page` | [05](./05-vmalloc-and-kernel-va.md) §5.6 |
 | 24 | DAMON | [13](./13-observability.md) §13.10 |
 | 25 | HVO | [09](./09-thp-and-hugetlb.md) §9.6 |
@@ -105,7 +105,7 @@
 | 27 | HMM | [11](./11-kvm-memory.md) §11.9 |
 | 28 | memblock | [02](./02-physical-layout.md) §2.10 |
 | 29 | page_frag | [04](./04-slab.md) §4.7 |
-| 30 | `swap_table` | [10](./10-reclaim.md) §10.8 |
+| 30 | `swap_table` | [10-reclaim/11](./10-reclaim/11-swap-table.md)（旧 §10.8） |
 | 31 | KSM 扫描循环 / userfaultfd ioctl | [12](./12-balloon-fpr-and-overcommit.md) §12.5、[07](./07-page-fault.md) §7.4 |
 | 32 | 八篇短条目 | 见下 |
 
@@ -118,7 +118,7 @@
 | `memfd_preservation.rst` | [08](./08-page-cache-and-writeback.md) §8.4 末 |
 | `kho.rst` | [02](./02-physical-layout.md) §2.10 末 |
 | `shrinker_debugfs.rst` | [13](./13-observability.md) §13.11 |
-| `numaperf.rst` | [03](./03-buddy.md) §3.8 末 |
+| `numaperf.rst` | [03-page-alloc/08](./03-page-alloc/08-numa-policy.md) 末（旧 §3.8） |
 | `nommu-mmap.rst`、`remap_file_pages.rst` | [06](./06-mm-and-vma.md) §6.12 |
 
 **前置**：进程章的 `mm` 指针、cgroup 章的 memory 控制器。本章假设你能读 `container_of` 和 `list_head`。

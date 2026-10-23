@@ -3,7 +3,7 @@
 **结论**：guest 里的物理地址（GPA）不是宿主物理地址（HPA）。x86 上 EPT（Intel）或 NPT（AMD）是第二张页表，把 GPA 翻译成 HPA。这张表由 KVM 建，不是 guest 内核建的。guest 缺页先走 guest 自己的页表；EPT violation 是第二张表没有映射，处理在宿主。
 
 > 通用 memslot：`include/linux/kvm_host.h`。x86 MMU：`arch/x86/include/asm/kvm_host.h`、`arch/x86/kvm/mmu/`。
-> 导航：[上一节 回收](./10-reclaim.md) · [目录](./README.md) · [下一节 balloon/FPR](./12-balloon-fpr-and-overcommit.md)
+> 导航：[上一节 回收](./10-reclaim/README.md) · [目录](./README.md) · [下一节 balloon/FPR](./12-balloon-fpr-and-overcommit.md)
 
 两套视角不要混：
 
@@ -418,4 +418,4 @@ ZONE_DEVICE 页怎么迁移、GPU 的 device private 状态机，本节没有展
 
 ---
 
-[上一节 回收](./10-reclaim.md) · [目录](./README.md) · [下一节 balloon/FPR](./12-balloon-fpr-and-overcommit.md)
+[上一节 回收](./10-reclaim/README.md) · [目录](./README.md) · [下一节 balloon/FPR](./12-balloon-fpr-and-overcommit.md)
