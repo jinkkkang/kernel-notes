@@ -8,15 +8,26 @@
 
 ## `struct swap_table`（`swap_table.h:10`）
 
-| 成员 | 中文 |
-|---|---|
-| `atomic_long_t entries[SWAPFILE_CLUSTER]` | 这个 cluster 里每个槽一项。一项是一个 `atomic_long_t` |
+```c
+struct swap_table {
+	/*
+	 * 这个 cluster 里每个槽一项。一项是一个 atomic_long_t。
+	 */
+	atomic_long_t entries[SWAPFILE_CLUSTER];
+};
+```
 
 ## `struct swap_memcg_table`（`:15`，仅 `CONFIG_MEMCG` 的读写路径会用）
 
-| 成员 | 中文 |
-|---|---|
-| `unsigned short id[SWAPFILE_CLUSTER]` | 每个槽的 memcg 私有 id。挂在 `swap_cluster_info->memcg_table` 上，和 entry 里的类型分开存 |
+```c
+struct swap_memcg_table {
+	/*
+	 * 每个槽的 memcg 私有 id。挂在 swap_cluster_info->memcg_table 上，
+	 * 和 entry 里的类型分开存。
+	 */
+	unsigned short id[SWAPFILE_CLUSTER];
+};
+```
 
 头文件 `:26-33` 写的布局（低位是类型标记）：
 

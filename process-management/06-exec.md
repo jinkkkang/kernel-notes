@@ -4,22 +4,65 @@
 
 ## 6.1 `struct linux_binprm`
 
-`include/linux/binfmts.h:28`：
+`include/linux/binfmts.h:28`。`struct binfmt_misc_bpf` 以匿名成员嵌进来，字段直接出现在 `linux_binprm` 上。
 
-| 成员 | 含义 |
-|---|---|
-| `vma` / `vma_pages` / `argmin` | 临时栈 VMA（`CONFIG_MMU`） |
-| `mm` / `old_mm` | 新 mm / 待释放旧 mm |
-| `user_ns` | exec 时的 user ns |
-| `p` | 用户栈当前 top |
-| `have_execfd` / `execfd_creds` / `secureexec` | 解释器 fd / 凭据 / AT_SECURE |
-| `point_of_no_return` | 已无法失败回用户态 |
-| `file` / `executable` / `interpreter` / `loader` | 相关文件 |
-| `cred` | 新凭证 |
-| `argc` / `envc` | 参数计数 |
-| `filename` / `interp` / `fdpath` | 路径名 |
-| `rlim_stack` | 保存的栈 rlimit |
-| `buf[BINPRM_BUF_SIZE]` | 文件头魔术缓冲 |
+```c
+/* bpf binfmt_misc 处理程序暂存的解释器选择 */
+struct binfmt_misc_bpf {
+	/* 匹配项绑定的解释器，可按名字挑选 */
+	const struct list_head *bpf_interps;
+	const char *bpf_interp;		/* bpf 处理程序选中的解释器 */
+	struct file *bpf_interp_file;	/* 选中的那个已绑定解释器文件 */
+	const char *bpf_interp_arg;	/* bpf 处理程序给出的解释器参数 */
+	u64 bpf_flags;			/* bpf 处理程序给出的 bpf_binprm_flags */
+};
+
+struct linux_binprm {
+#ifdef CONFIG_MMU
+	struct vm_area_struct *vma;	/* 临时栈 VMA */
+	unsigned long vma_pages;	/* 临时栈 VMA 的页数 */
+	unsigned long argmin;		/* 临时栈的 rlimit 标记，给 copy_strings() */
+#else
+# define MAX_ARG_PAGES	32
+	struct page *page[MAX_ARG_PAGES]; /* 无 MMU 时存放参数字符串的页 */
+#endif
+	struct mm_struct *mm;		/* 新 mm */
+	struct mm_struct *old_mm;	/* 待释放旧 mm */
+	/* exec 时的 user ns；发布到 exec_state，would_dump() 会收窄 */
+	struct user_namespace *user_ns;
+	unsigned long p;		/* 用户栈当前 top */
+	unsigned int
+		/* 是否把解释器 fd 交给用户态 */
+		have_execfd:1,
+		/* 改用脚本（binfmt_misc）的凭据 */
+		execfd_creds:1,
+		/* 提权 exec，用来设 AT_SECURE */
+		secureexec:1,
+		/* 已无法失败回用户态 */
+		point_of_no_return:1,
+		/* comm 必须取自 dentry */
+		comm_from_dentry:1,
+		/* 用户态要求按调用者环境只检查可执行性 */
+		is_check:1;
+	struct file *executable;	/* 交给解释器的可执行文件 */
+	struct file *interpreter;	/* 解释器文件 */
+	struct file *loader;		/* binfmt_misc loader，未消费则不能开始新 exec */
+	struct file *file;		/* 当前要装载的文件 */
+	struct cred *cred;		/* 新凭证 */
+	int unsafe;			/* 本次 exec 有多不安全（LSM_UNSAFE_*） */
+	unsigned int per_clear;		/* 要从 personality 清掉的位 */
+	int argc, envc;			/* 参数计数与环境变量计数 */
+	const char *filename;		/* procps 看到的路径名 */
+	const char *interp;		/* 真正执行的路径名，脚本/misc 时不同于 filename */
+	const char *fdpath;		/* execveat 生成的路径名 */
+	struct binfmt_misc_bpf;		/* bpf 处理程序暂存的解释器选择 */
+	unsigned interp_flags;		/* BINPRM_FLAGS_* */
+	int execfd;			/* 可执行文件的 fd */
+	unsigned long exec;		/* 栈上文件名的用户地址，供 AT_EXECFN */
+	struct rlimit rlim_stack;	/* 保存的栈 rlimit */
+	char buf[BINPRM_BUF_SIZE];	/* 文件头魔术缓冲 */
+} __randomize_layout;
+```
 
 ## 6.2 调用链
 

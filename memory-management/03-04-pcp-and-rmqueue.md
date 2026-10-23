@@ -11,19 +11,54 @@
 
 每个 CPU、每个 zone 一份。`____cacheline_aligned_in_smp`，避免和旁边的计数抢同一条缓存线。
 
-| 成员 | 条件 | 中文 |
-|---|---|---|
-| `spinlock_t lock` | 始终 | 保护下面的 `lists`。这是 PCP 自己的锁，不是 `zone->lock` |
-| `int count` | 始终 | 列表里现在有多少页 |
-| `int high` | 始终 | 高水位。超过就要倒回 buddy |
-| `int high_min` | 始终 | `high` 允许落到的下限 |
-| `int high_max` | 始终 | `high` 允许涨到的上限。分配忙时 `alloc_factor` 可以把 high 往上抬，闲时 `decay_pcp_high` 再把它降下来 |
-| `int batch` | 始终 | 一次向 buddy 批量申请或归还的大小 |
-| `u8 flags` | 始终 | 由 `pcp->lock` 保护。`PCPF_PREV_FREE_HIGH_ORDER`（`mmzone.h:841`）：上一次释放是高阶，避免一次偶然的高阶释放就把 PCP 倒空。`PCPF_FREE_HIGH_BATCH`（`:842`）：连续高阶释放、中间没有分配时，先留住 `batch` 页再倒，减少 zone 锁竞争，也让缓存热的页还能被复用 |
-| `u8 alloc_factor` | 始终 | 分配时放大 batch 的因子 |
-| `u8 expire` | `CONFIG_NUMA` | 减到 0 时，远程 CPU 的 pageset 被排空。本地 CPU 的页留着，远端滞留的页还回 |
-| `short free_count` | 始终 | 连续释放计数。用来识别「只还不要」的模式，配合上面的高阶标志决定要不要提前倒 |
-| `struct list_head lists[NR_PCP_LISTS]` | 始终 | 按迁移类型分链。低阶是 `MIGRATE_PCPTYPES * (PAGE_ALLOC_COSTLY_ORDER + 1)`（`mmzone.h:826`）。`CONFIG_TRANSPARENT_HUGEPAGE` 时再加两条 THP 链（`:821-827`）：一条给 `GFP_MOVABLE`，一条给 `GFP_UNMOVABLE` 和 `GFP_RECLAIMABLE` |
+```c
+struct per_cpu_pages {
+	/*
+	 * 保护下面的 lists。
+	 * 这是 PCP 自己的锁，不是 zone->lock。
+	 */
+	spinlock_t lock;
+	int count;		/* 列表里现在有多少页 */
+	int high;		/* 高水位。超过就要倒回 buddy */
+	int high_min;		/* high 允许落到的下限 */
+	/*
+	 * high 允许涨到的上限。分配忙时 alloc_factor 可以把 high 往上抬，
+	 * 闲时 decay_pcp_high 再把它降下来。
+	 */
+	int high_max;
+	int batch;		/* 一次向 buddy 批量申请或归还的大小 */
+	/*
+	 * 由 pcp->lock 保护。
+	 * PCPF_PREV_FREE_HIGH_ORDER（mmzone.h:841）：上一次释放是高阶，
+	 * 避免一次偶然的高阶释放就把 PCP 倒空。
+	 * PCPF_FREE_HIGH_BATCH（:842）：连续高阶释放、中间没有分配时，
+	 * 先留住 batch 页再倒，减少 zone 锁竞争，也让缓存热的页还能被复用。
+	 */
+	u8 flags;
+	u8 alloc_factor;	/* 分配时放大 batch 的因子 */
+#ifdef CONFIG_NUMA
+	/*
+	 * 减到 0 时，远程 CPU 的 pageset 被排空。
+	 * 本地 CPU 的页留着，远端滞留的页还回。
+	 */
+	u8 expire;
+#endif
+	/*
+	 * 连续释放计数。用来识别「只还不要」的模式，
+	 * 配合上面的高阶标志决定要不要提前倒。
+	 */
+	short free_count;
+
+	/*
+	 * 按迁移类型分链。低阶是
+	 * MIGRATE_PCPTYPES * (PAGE_ALLOC_COSTLY_ORDER + 1)
+	 * （mmzone.h:826）。CONFIG_TRANSPARENT_HUGEPAGE 时再加两条
+	 * THP 链（:821-827）：一条给 GFP_MOVABLE，一条给
+	 * GFP_UNMOVABLE 和 GFP_RECLAIMABLE。
+	 */
+	struct list_head lists[NR_PCP_LISTS];
+} ____cacheline_aligned_in_smp;
+```
 
 `PAGE_ALLOC_COSTLY_ORDER` 是 3。低阶 PCP 覆盖 order 0 到 3。
 

@@ -9,8 +9,8 @@
 ```c
 struct sighand_struct {
 	spinlock_t siglock;              /* 中文：信号子系统主锁 */
-	refcount_t count;
-	wait_queue_head_t signalfd_wqh;
+	refcount_t count;                /* 共享计数，CLONE_SIGHAND 时增加 */
+	wait_queue_head_t signalfd_wqh;  /* signalfd 等待队列 */
 	struct k_sigaction action[_NSIG]; /* 中文：每个信号的处理动作 */
 };
 ```
@@ -31,26 +31,101 @@ struct sigpending {
 
 ### `signal_struct`（`sched/signal.h:94`，线程组共享）
 
-| 成员 | 含义 |
-|---|---|
-| `sigcnt` / `live` / `nr_threads` | 引用、活线程数、线程总数 |
-| `thread_head` | 组内线程链表 |
-| `wait_chldexit` | `wait4` 等待队列 |
-| `curr_target` | 组信号负载均衡目标线程 |
-| `shared_pending` | 组级挂起信号 |
-| `multiprocess` | fork 期间延迟的多进程信号 |
-| `group_exit_code` / `notify_count` / `group_exec_task` | 组退出 / exec |
-| `group_stop_count` / `flags` | 作业控制停止；`SIGNAL_*` |
-| `core_state` | coredump |
-| `is_child_subreaper` / `has_child_subreaper` / `autoreap` | 收尸与自收 |
-| `posix_timers` / `real_timer` / `it[]` / `cputimer` | 定时器（`CONFIG_POSIX_TIMERS`） |
-| `pids[PIDTYPE_MAX]` | 组关联的 pid 对象 |
-| `tty` / `leader` | 控制终端 / session leader |
-| `rlim[RLIM_NLIMITS]` | 资源限制 |
-| `utime,stime,cutime,…` | 累计 CPU/故障/IO 统计 |
-| `oom_score_adj` / `oom_mm` | OOM |
-| `exec_update_lock` | exec 时凭证更新锁 |
-| `cred_guard_mutex` | 废弃，勿新用 |
+分组节选，不是全部成员。下面按源码顺序；表里把 `rlim` 写在累计统计前面，源码里统计在前。
+
+```c
+/* --- 引用、线程与共享挂起 --- */
+	refcount_t		sigcnt;		/* 引用计数 */
+	atomic_t		live;		/* 活线程数 */
+	int			nr_threads;	/* 线程总数 */
+	/* 此处省略本组未记录的成员 */
+	struct list_head	thread_head;	/* 组内线程链表 */
+	wait_queue_head_t	wait_chldexit;	/* wait4 等待队列 */
+	struct task_struct	*curr_target;	/* 组信号负载均衡目标线程 */
+	struct sigpending	shared_pending;	/* 组级挂起信号 */
+	struct hlist_head	multiprocess;	/* fork 期间延迟的多进程信号 */
+```
+
+```c
+/* --- 组退出、停止、coredump 与收尸 --- */
+	int			group_exit_code;	/* 组退出码 */
+	int			notify_count;		/* 降到不大于 0 时叫醒 group_exec_task */
+	struct task_struct	*group_exec_task;	/* exec 期间等同伴退出的线程 */
+	int			group_stop_count;	/* 作业控制停止计数 */
+	unsigned int		flags;			/* SIGNAL_* */
+	struct core_state	*core_state;		/* coredump */
+	bool			is_child_subreaper;	/* 孤儿来这里，不到 init */
+	bool			has_child_subreaper;	/* 退出时要往祖先找 subreaper */
+	unsigned int		autoreap:1;		/* CLONE_AUTOREAP：退出时自收尸 */
+```
+
+```c
+/* --- 定时器（CONFIG_POSIX_TIMERS） --- */
+#ifdef CONFIG_POSIX_TIMERS
+	/* 此处省略本组未记录的成员 */
+	struct hlist_head	posix_timers;		/* POSIX 间隔定时器 */
+	/* 此处省略本组未记录的成员 */
+	struct hrtimer		real_timer;		/* ITIMER_REAL */
+	/* 此处省略本组未记录的成员 */
+	struct cpu_itimer	it[2];			/* ITIMER_PROF 与 ITIMER_VIRTUAL */
+	struct thread_group_cputimer cputimer;		/* 线程组 CPU 定时器累计 */
+#endif
+```
+
+```c
+/* --- 组 pid 与控制终端 --- */
+	/* 此处省略本组未记录的成员 */
+	struct pid		*pids[PIDTYPE_MAX];	/* 组关联的 pid 对象 */
+	/* 此处省略本组未记录的成员 */
+	int			leader;			/* 非 0 表示 session leader */
+	struct tty_struct	*tty;			/* 控制终端，没有则为 NULL */
+```
+
+```c
+/* --- 累计 CPU / 故障 / IO，以及 rlimit --- */
+	/* 此处省略本组未记录的成员 */
+	/*
+	 * 已退出线程在 __exit_signal 累加进来。
+	 * 带 c 的字段是已回收子进程；活线程仍记在自己的 task_struct 上。
+	 */
+	u64			utime;		/* 已退出线程累计的用户时间 */
+	u64			stime;		/* 已退出线程累计的系统时间 */
+	u64			cutime;		/* 已回收子进程的用户时间 */
+	u64			cstime;		/* 已回收子进程的系统时间 */
+	u64			gtime;		/* 已退出线程累计的 guest 时间 */
+	u64			cgtime;		/* 已回收子进程的 guest 时间 */
+	struct prev_cputime	prev_cputime;	/* cputime_adjust 用的前回值 */
+	unsigned long		nvcsw;		/* 已退出线程的自愿切换 */
+	unsigned long		nivcsw;		/* 已退出线程的非自愿切换 */
+	unsigned long		cnvcsw;		/* 已回收子进程的自愿切换 */
+	unsigned long		cnivcsw;	/* 已回收子进程的非自愿切换 */
+	unsigned long		min_flt;	/* 已退出线程的小缺页 */
+	unsigned long		maj_flt;	/* 已退出线程的大缺页 */
+	unsigned long		cmin_flt;	/* 已回收子进程的小缺页 */
+	unsigned long		cmaj_flt;	/* 已回收子进程的大缺页 */
+	unsigned long		inblock;	/* 已退出线程读入的块数 */
+	unsigned long		oublock;	/* 已退出线程写出的块数 */
+	unsigned long		cinblock;	/* 已回收子进程读入的块数 */
+	unsigned long		coublock;	/* 已回收子进程写出的块数 */
+	unsigned long		maxrss;		/* 本线程组 RSS 高水位 */
+	unsigned long		cmaxrss;	/* 已回收子进程的 RSS 高水位 */
+	struct task_io_accounting ioac;		/* 退出线程与子进程的累计 IO */
+	/* 已退出线程的调度 CPU 时间（纳秒），不含僵尸组长 */
+	unsigned long long	sum_sched_runtime;
+	struct rlimit		rlim[RLIM_NLIMITS];	/* 资源限制 */
+```
+
+```c
+/* --- OOM 与 exec 凭证锁 --- */
+	/* 此处省略本组未记录的成员 */
+	short			oom_score_adj;	/* OOM 杀分调整 */
+	/* 此处省略本组未记录的成员 */
+	struct mm_struct	*oom_mm;	/* 被 OOM 杀掉时记下的 mm */
+	/* 废弃，勿新用；挡住 ptrace 等外来方影响凭证计算 */
+	struct mutex		cred_guard_mutex;
+	/* exec 时凭证更新锁 */
+	struct rw_semaphore	exec_update_lock;
+```
 
 `SIGNAL_*` 标志（`:261` 起）：`SIGNAL_STOP_STOPPED`、`SIGNAL_GROUP_EXIT`、`SIGNAL_UNKILLABLE`（init）、`SIGNAL_CLD_*` 等。
 

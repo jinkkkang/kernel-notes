@@ -65,17 +65,50 @@ flowchart TD
 
 头文件注释写明：这份结构装的是分配函数之间传递的、基本不变的参数。`nodemask`、`migratetype`、`highest_zoneidx` 在 `__alloc_pages()` 里只填一次。`zonelist`、`preferred_zoneref`、`highest_zoneidx` 快路径先设好，slowpath 里可能再改。其它函数拿到的是 const 指针。
 
-| 成员 | 中文 |
-|---|---|
-| `struct zonelist *zonelist` | 这次允许走的 zone 列表。`__GFP_THISNODE` 用 `ZONELIST_NOFALLBACK`，否则是带回退的那条 |
-| `const nodemask_t *nodemask` | 调用者给的节点掩码。NULL 表示不额外限制。mempolicy 会在进来之前把它算好 |
-| `struct zoneref *preferred_zoneref` | zonelist 上的起始项。快路径从这里往后扫，不从数组头重来 |
-| `int migratetype` | 由 gfp 推出的迁移类型：UNMOVABLE / MOVABLE / RECLAIMABLE。决定进哪条 buddy 链、哪条 PCP 链 |
-| `enum zone_type highest_zoneidx` | 这次请求能用的最高 zone。比它低的 zone 用 `lowmem_reserve[highest_zoneidx]` 保护，防止高 zone 的分配把 DMA/DMA32 榨干。回收和 compaction 也用它封顶：比它高的 zone 对这次请求没用 |
-| `bool spread_dirty_pages` | 脏页分配要摊开。快路径里为真时看 `node_dirty_ok`，避免一个 node 吃掉全局脏页配额 |
-| `unsigned int alloc_flags` | 只放对整次分配都生效的标志（水位档、`ALLOC_CPUSET`、`ALLOC_CMA`、`ALLOC_NOFRAGMENT`、`ALLOC_NOLOCK` 一类），不是 gfp 本身 |
+```c
+struct alloc_context {
+	/*
+	 * 这次允许走的 zone 列表。
+	 * __GFP_THISNODE 用 ZONELIST_NOFALLBACK，否则是带回退的那条。
+	 */
+	struct zonelist *zonelist;
+	/*
+	 * 调用者给的节点掩码。NULL 表示不额外限制。
+	 * mempolicy 会在进来之前把它算好。
+	 */
+	const nodemask_t *nodemask;
+	/*
+	 * zonelist 上的起始项。
+	 * 快路径从这里往后扫，不从数组头重来。
+	 */
+	struct zoneref *preferred_zoneref;
+	/*
+	 * 由 gfp 推出的迁移类型：UNMOVABLE / MOVABLE / RECLAIMABLE。
+	 * 决定进哪条 buddy 链、哪条 PCP 链。
+	 */
+	int migratetype;
 
-`prepare_alloc_pages` 是填这张表的地方，声明在调用链上，本篇不把每个赋值再抄一遍。改 gfp 的 scope 发生在填表之前（`page_alloc.c:5412-5419`）。
+	/*
+	 * 这次请求能用的最高 zone。比它低的 zone 用
+	 * lowmem_reserve[highest_zoneidx] 保护，防止高 zone 的分配
+	 * 把 DMA/DMA32 榨干。回收和 compaction 也用它封顶：
+	 * 比它高的 zone 对这次请求没用。
+	 */
+	enum zone_type highest_zoneidx;
+	/*
+	 * 脏页分配要摊开。快路径里为真时看 node_dirty_ok，
+	 * 避免一个 node 吃掉全局脏页配额。
+	 */
+	bool spread_dirty_pages;
+	/*
+	 * 只放对整次分配都生效的标志（水位档、ALLOC_CPUSET、
+	 * ALLOC_CMA、ALLOC_NOFRAGMENT、ALLOC_NOLOCK 一类），不是 gfp 本身。
+	 */
+	unsigned int alloc_flags;
+};
+```
+
+`prepare_alloc_pages` 是填这个结构的地方，声明在调用链上，本篇不把每个赋值再抄一遍。改 gfp 的 scope 发生在填结构之前（`page_alloc.c:5412-5419`）。
 
 ---
 

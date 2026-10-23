@@ -31,22 +31,55 @@ second chance（`:452-455`）：folio 缺页进来之后，老化至少要查两
 
 ## `struct lru_gen_folio`（`mmzone.h:563`）
 
-| 成员 | 中文 |
-|---|---|
-| `unsigned long max_seq` | 最年轻一代的编号。老化时增加。匿名和文件共用 |
-| `unsigned long min_seq[ANON_AND_FILE]` | 各自最老一代。回收时增加。允许和另一类差若干代，用来适应极端 swappiness。差多少见上 |
-| `unsigned long timestamps[MAX_NR_GENS]` | 每一代的出生时间，单位 jiffies。`inc_max_seq` 里 `WRITE_ONCE(timestamps[next], jiffies)`（`vmscan.c:4061`） |
-| `struct list_head folios[MAX_NR_GENS][ANON_AND_FILE][MAX_NR_ZONES]` | 分代链表。下标是代、匿名/文件、zone。驱逐时才懒排序 |
-| `long nr_pages[MAX_NR_GENS][ANON_AND_FILE][MAX_NR_ZONES]` | 每一格的页数。注释（`:560-561`）写明最终一致，`reset_batch_size()` 还没做完时可以暂时是负数 |
-| `unsigned long avg_refaulted[ANON_AND_FILE][MAX_NR_TIERS]` | refault 的指数滑动平均。PID 的 I 项，平滑系数 1/2（`vmscan.c:3177`） |
-| `unsigned long avg_total[ANON_AND_FILE][MAX_NR_TIERS]` | 被驱逐加被保护的滑动平均 |
-| `unsigned long protected[NR_HIST_GENS][ANON_AND_FILE][MAX_NR_TIERS]` | 受保护页。只能在 LRU 锁下改 |
-| `atomic_long_t evicted[NR_HIST_GENS][ANON_AND_FILE][MAX_NR_TIERS]` | 被驱逐的。可以不拿 LRU 锁 |
-| `atomic_long_t refaulted[NR_HIST_GENS][ANON_AND_FILE][MAX_NR_TIERS]` | 被重新缺页进来的 |
-| `bool enabled` | 这个 lruvec 是否启用 MGLRU。`lru_gen_add_folio` 看到它为假就返回 false，页回到经典链 |
-| `u8 gen` | 所属 memcg 代 |
-| `u8 seg` | 在 memcg 链表的哪一段（head / tail / default） |
-| `struct hlist_nulls_node list` | 挂到节点的全局回收 memcg 链表 |
+```c
+struct lru_gen_folio {
+	/*
+	 * 最年轻一代的编号。老化时增加。匿名和文件共用。
+	 */
+	unsigned long max_seq;
+	/*
+	 * 各自最老一代。回收时增加。
+	 * 允许和另一类差若干代，用来适应极端 swappiness。差多少见上。
+	 */
+	unsigned long min_seq[ANON_AND_FILE];
+	/*
+	 * 每一代的出生时间，单位 jiffies。
+	 * inc_max_seq 里 WRITE_ONCE(timestamps[next], jiffies)（vmscan.c:4061）。
+	 */
+	unsigned long timestamps[MAX_NR_GENS];
+	/*
+	 * 分代链表。下标是代、匿名/文件、zone。驱逐时才懒排序。
+	 */
+	struct list_head folios[MAX_NR_GENS][ANON_AND_FILE][MAX_NR_ZONES];
+	/*
+	 * 每一格的页数。注释（:560-561）写明最终一致，
+	 * reset_batch_size() 还没做完时可以暂时是负数。
+	 */
+	long nr_pages[MAX_NR_GENS][ANON_AND_FILE][MAX_NR_ZONES];
+	/*
+	 * refault 的指数滑动平均。PID 的 I 项，平滑系数 1/2（vmscan.c:3177）。
+	 */
+	unsigned long avg_refaulted[ANON_AND_FILE][MAX_NR_TIERS];
+	unsigned long avg_total[ANON_AND_FILE][MAX_NR_TIERS]; /* 被驱逐加被保护的滑动平均 */
+	/*
+	 * 受保护页。只能在 LRU 锁下改。
+	 */
+	unsigned long protected[NR_HIST_GENS][ANON_AND_FILE][MAX_NR_TIERS];
+	/*
+	 * 被驱逐的。可以不拿 LRU 锁。
+	 */
+	atomic_long_t evicted[NR_HIST_GENS][ANON_AND_FILE][MAX_NR_TIERS];
+	atomic_long_t refaulted[NR_HIST_GENS][ANON_AND_FILE][MAX_NR_TIERS]; /* 被重新缺页进来的 */
+	/*
+	 * 这个 lruvec 是否启用 MGLRU。
+	 * lru_gen_add_folio 看到它为假就返回 false，页回到经典链。
+	 */
+	bool enabled;
+	u8 gen;					/* 所属 memcg 代 */
+	u8 seg;					/* 在 memcg 链表的哪一段（head / tail / default） */
+	struct hlist_nulls_node list;		/* 挂到节点的全局回收 memcg 链表 */
+};
+```
 
 `NR_HIST_GENS`：编了 `CONFIG_LRU_GEN_STATS` 时等于 `MAX_NR_GENS`，否则是 1（`:545-549`）。历史统计关掉时，被赶走的代只留最新一格。`lru_gen_full` 要历史，见 [06](./10-06-lru-vs-mglru.md)。
 
@@ -56,13 +89,21 @@ second chance（`:452-455`）：folio 缺页进来之后，老化至少要查两
 
 双缓冲 Bloom filter。`NR_BLOOM_FILTERS` 是 2（`:602`）。
 
-| 成员 | 中文 |
-|---|---|
-| `unsigned long seq` | 和 `max_seq` 对齐。每轮迭代之后同步 |
-| `struct list_head *head` | 当前这轮从 mm 链表的哪里继续 |
-| `struct list_head *tail` | 上一轮在哪里结束 |
-| `unsigned long *filters[NR_BLOOM_FILTERS]` | Bloom filter。每轮翻转用哪一张 |
-| `unsigned long stats[NR_HIST_GENS][NR_MM_STATS]` | 调试用的 mm 计数 |
+```c
+struct lru_gen_mm_state {
+	/*
+	 * 和 max_seq 对齐。每轮迭代之后同步。
+	 */
+	unsigned long seq;
+	struct list_head *head;		/* 当前这轮从 mm 链表的哪里继续 */
+	struct list_head *tail;		/* 上一轮在哪里结束 */
+	/*
+	 * Bloom filter。每轮翻转用哪一张。
+	 */
+	unsigned long *filters[NR_BLOOM_FILTERS];
+	unsigned long stats[NR_HIST_GENS][NR_MM_STATS]; /* 调试用的 mm 计数 */
+};
+```
 
 `NR_MM_STATS`（`:593-599`）：`MM_LEAF_TOTAL` 叶子项总数，`MM_LEAF_YOUNG` 年轻叶子，`MM_NONLEAF_FOUND` 在 Bloom filter 里找到的非叶子，`MM_NONLEAF_ADDED` 加进 Bloom filter 的非叶子。
 
@@ -74,16 +115,27 @@ second chance（`:452-455`）：folio 缺页进来之后，老化至少要查两
 
 一个回收线程正在做的页表遍历。挂在 `struct reclaim_state.mm_walk` 上（`include/linux/swap.h:151`）。
 
-| 成员 | 中文 |
-|---|---|
-| `struct lruvec *lruvec` | 正在回收的 lruvec |
-| `unsigned long seq` | 从 `lru_gen_folio` 读来的 `max_seq`。注释写明可以是过期的 |
-| `unsigned long next_addr` | 这个 mm 里下一次从哪个地址接着扫 |
-| `int nr_pages[MAX_NR_GENS][ANON_AND_FILE][MAX_NR_ZONES]` | 攒着的、待提升页数。批量刷进 `lrugen->nr_pages` |
-| `int mm_stats[NR_MM_STATS]` | 攒着的 mm 计数 |
-| `int batched` | 攒下的总项数 |
-| `int swappiness` | 这次遍历用的 swappiness |
-| `bool force_scan` | 为真时少用启发式、多扫。debugfs 的 `force_scan` 最终传到这里 |
+```c
+struct lru_gen_mm_walk {
+	struct lruvec *lruvec;			/* 正在回收的 lruvec */
+	/*
+	 * 从 lru_gen_folio 读来的 max_seq。注释写明可以是过期的。
+	 */
+	unsigned long seq;
+	unsigned long next_addr;		/* 这个 mm 里下一次从哪个地址接着扫 */
+	/*
+	 * 攒着的、待提升页数。批量刷进 lrugen->nr_pages。
+	 */
+	int nr_pages[MAX_NR_GENS][ANON_AND_FILE][MAX_NR_ZONES];
+	int mm_stats[NR_MM_STATS];		/* 攒着的 mm 计数 */
+	int batched;				/* 攒下的总项数 */
+	int swappiness;				/* 这次遍历用的 swappiness */
+	/*
+	 * 为真时少用启发式、多扫。debugfs 的 force_scan 最终传到这里。
+	 */
+	bool force_scan;
+};
+```
 
 ---
 
@@ -97,11 +149,17 @@ PID 的一个采样点。注释（`:3174-3190`）：
 - 设定点 SP 永远是某一类的第一档。过程变量 PV 是另一类的任意档，或同一类的其它档。
 - 误差是 SP 和 PV 的差。修正是 SP>PV 时关掉保护，SP<PV 时打开保护。
 
-| 成员 | 中文 |
-|---|---|
-| `unsigned long refaulted` | 这一侧计入的 refault |
-| `unsigned long total` | 被驱逐加上被保护 |
-| `int gain` | 增益。比较匿名和文件时，一边放 swappiness，另一边放 `MAX_SWAPPINESS - swappiness`（`get_type_to_scan`，`:4835`） |
+```c
+struct ctrl_pos {
+	unsigned long refaulted;	/* 这一侧计入的 refault */
+	unsigned long total;		/* 被驱逐加上被保护 */
+	/*
+	 * 增益。比较匿名和文件时，一边放 swappiness，
+	 * 另一边放 MAX_SWAPPINESS - swappiness（get_type_to_scan，:4835）。
+	 */
+	int gain;
+};
+```
 
 `positive_ctrl_err`（`:3253`）：PV 的 refault 少于 `MIN_LRU_BATCH`，或者 PV 的 refault/total 比 SP 低（按 gain 缩放），返回 true。`MIN_LRU_BATCH` 是 `BITS_PER_LONG`（`mmzone.h:541`）。
 
@@ -113,12 +171,21 @@ PID 的一个采样点。注释（`:3174-3190`）：
 
 每个 node 一份 memcg 的 LRU，本身也是「LRU 的 LRU」：每个 node×memcg 还有自己的 folio LRU（`mem_cgroup_lruvec()`）。`MEMCG_NR_GENS` 是 3，`MEMCG_NR_BINS` 是 8（`:676-677`）。注释（`:669-674`）说明为什么是 3 代而不是 2 代：有效的只有老（seq）和年轻（seq+1）。多出来的一格是为了无锁读到过期的 `seq-1` 时，不会绕回年轻代。
 
-| 成员 | 中文 |
-|---|---|
-| `unsigned long seq` | 这个 node 的 memcg 代计数。模 `MEMCG_NR_GENS` 之后指向老代 |
-| `unsigned long nr_memcgs[MEMCG_NR_GENS]` | 每一代里有多少 memcg |
-| `struct hlist_nulls_head fifo[MEMCG_NR_GENS][MEMCG_NR_BINS]` | 每代再随机分到 8 个桶。桶用 `hlist_nulls`，虚拟地分成 head、tail、default 三段 |
-| `spinlock_t lock` | 保护上面的计数和链表 |
+```c
+struct lru_gen_memcg {
+	/*
+	 * 这个 node 的 memcg 代计数。模 MEMCG_NR_GENS 之后指向老代。
+	 */
+	unsigned long seq;
+	unsigned long nr_memcgs[MEMCG_NR_GENS];	/* 每一代里有多少 memcg */
+	/*
+	 * 每代再随机分到 8 个桶。桶用 hlist_nulls，
+	 * 虚拟地分成 head、tail、default 三段。
+	 */
+	struct hlist_nulls_head	fifo[MEMCG_NR_GENS][MEMCG_NR_BINS];
+	spinlock_t lock;			/* 保护上面的计数和链表 */
+};
+```
 
 操作和触发事件写在 `:645-666`，这里按注释复述，不另起一套名字：
 

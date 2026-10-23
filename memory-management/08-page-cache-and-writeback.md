@@ -12,21 +12,53 @@
 
 每个 inode 有一个（`inode->i_mapping`），也有不挂 inode 的（swap cache 等）。
 
-| 成员 | 中文 |
-|---|---|
-| `struct inode *host` | 属主 inode。没有 inode 的 mapping（例如某些伪文件）为 NULL |
-| `struct xarray i_pages` | **页缓存本体**。index → folio。以前是 radix tree，现在是 xarray。锁是 xarray 自己的 |
-| `struct rw_semaphore invalidate_lock` | 截断、punch hole、失效页缓存时的锁。和 `i_pages` 的锁不是同一把 |
-| `gfp_t gfp_mask` | 给这个文件分配 folio 用的 GFP。通常含 `GFP_HIGHUSER_MOVABLE`，文件系统可以去掉 `__GFP_FS` |
-| `atomic_t i_mmap_writable` | 多少个 `VM_SHARED` + `VM_MAYWRITE` 的映射。非 0 表示有人能把文件写脏 |
-| `struct rb_root_cached i_mmap` | 映射了这个文件的 VMA 区间树。VMA 侧的挂钩是 `vma->shared.rb`（见 [06](./06-mm-and-vma.md)） |
-| `unsigned long nrpages` | 页缓存里的页数。由 `i_pages` 的锁保护 |
-| `pgoff_t writeback_index` | 循环回写的起点，避免每次都从文件头写 |
-| `const struct address_space_operations *a_ops` | 文件系统的方法。内存侧只依赖下面几个 |
-| `unsigned long flags` | `AS_*`：错误、回收中、unevictable 等 |
-| `errseq_t wb_err` | 最近一次回写错误。`fsync` 用它判断要不要向用户报告 |
-| `spinlock_t i_private_lock` | 属主私用，内核通用代码不解释它 |
-| `struct rw_semaphore i_mmap_rwsem` | 保护 `i_mmap` 和 `i_mmap_writable` |
+```c
+struct address_space {
+	/*
+	 * 属主 inode。没有 inode 的 mapping（例如某些伪文件）为 NULL。
+	 */
+	struct inode		*host;
+	/*
+	 * 页缓存本体。index → folio。以前是 radix tree，现在是 xarray。
+	 * 锁是 xarray 自己的。
+	 */
+	struct xarray		i_pages;
+	/*
+	 * 截断、punch hole、失效页缓存时的锁。和 i_pages 的锁不是同一把。
+	 */
+	struct rw_semaphore	invalidate_lock;
+	/*
+	 * 给这个文件分配 folio 用的 GFP。通常含 GFP_HIGHUSER_MOVABLE，
+	 * 文件系统可以去掉 __GFP_FS。
+	 */
+	gfp_t			gfp_mask;
+	/*
+	 * 多少个 VM_SHARED + VM_MAYWRITE 的映射。非 0 表示有人能把文件写脏。
+	 */
+	atomic_t		i_mmap_writable;
+	/*
+	 * 映射了这个文件的 VMA 区间树。VMA 侧的挂钩是 vma->shared.rb
+	 * （见 06-mm-and-vma.md）。
+	 */
+	struct rb_root_cached	i_mmap;
+	/*
+	 * 页缓存里的页数。由 i_pages 的锁保护。
+	 */
+	unsigned long		nrpages;
+	pgoff_t			writeback_index;	/* 循环回写的起点，避免每次都从文件头写 */
+	/*
+	 * 文件系统的方法。内存侧只依赖下面几个。
+	 */
+	const struct address_space_operations *a_ops;
+	unsigned long		flags;		/* AS_*：错误、回收中、unevictable 等 */
+	/*
+	 * 最近一次回写错误。fsync 用它判断要不要向用户报告。
+	 */
+	errseq_t		wb_err;
+	spinlock_t		i_private_lock;	/* 属主私用，内核通用代码不解释它 */
+	struct rw_semaphore	i_mmap_rwsem;	/* 保护 i_mmap 和 i_mmap_writable */
+} __attribute__((aligned(sizeof(long)))) __randomize_layout;
+```
 
 结构按 `sizeof(long)` 对齐（`:485`）。原因：folio 的 `mapping` 指针最低位被拿来做 `FOLIO_MAPPING_ANON`。地址不对齐，匿名标记会和真实指针撞车。
 
@@ -42,26 +74,62 @@ xarray 的标记（`:493`）：
 
 ### `address_space_operations` 里和内存有关的成员（`fs.h:401`）
 
-整张表是 VFS 的。本章只解释内存路径会调用的：
+这是 VFS 的方法。本章只解释内存路径会调用的，按源码顺序给出带注释的源码片段：
 
-| 方法 | 中文 |
-|---|---|
-| `read_folio` | 把一个不在内存里的 folio 从磁盘读上来 |
-| `readahead` | 批量预读 |
-| `writepages` | 把脏 folio 写回去 |
-| `dirty_folio` | 把 folio 标脏。返回值表示这次是不是由干净变成脏 |
-| `write_begin` / `write_end` | buffered write 锁定或分配 folio 的两端 |
-| `invalidate_folio` | 截断时作废 folio 的一部分 |
-| `release_folio` | 回收要丢页缓存前问文件系统：私有数据（buffer_head）能不能放 |
-| `free_folio` | folio 离开页缓存时的通知 |
-| `migrate_folio` | 把内容迁到另一个 folio。`MIGRATE_ASYNC` 不许睡觉 |
-| `launder_folio` | 回收前把脏页洗干净 |
-| `is_partially_uptodate` | 子页读：这一段是不是已经在 folio 里 |
-| `is_dirty_writeback` | 文件系统私有状态下，这页算不算脏、算不算正在回写。回收用它，避免只看 xarray 标记看漏 |
-| `error_remove_folio` | 硬件中毒时把 folio 从页缓存摘掉 |
-| `swap_activate` / `swap_deactivate` | swap 文件，不是普通页缓存 |
-| `direct_IO` | 绕过页缓存。和本章的 folio 路径平行 |
-| `bmap` | FIBMAP 的旧接口。注释写了别用 |
+```c
+struct address_space_operations {
+	int (*read_folio)(struct file *, struct folio *); /* 把一个不在内存里的 folio 从磁盘读上来 */
+	int (*writepages)(struct address_space *, struct writeback_control *); /* 把脏 folio 写回去 */
+	/*
+	 * 把 folio 标脏。返回值表示这次是不是由干净变成脏。
+	 */
+	bool (*dirty_folio)(struct address_space *, struct folio *);
+	void (*readahead)(struct readahead_control *); /* 批量预读 */
+	/* buffered write 的起始端：锁定或分配 folio */
+	int (*write_begin)(const struct kiocb *, struct address_space *mapping,
+				loff_t pos, unsigned len,
+				struct folio **foliop, void **fsdata);
+	/* buffered write 的结束端，和 write_begin 成对 */
+	int (*write_end)(const struct kiocb *, struct address_space *mapping,
+				loff_t pos, unsigned len, unsigned copied,
+				struct folio *folio, void *fsdata);
+	/*
+	 * FIBMAP 的旧接口。源码注释写了别用。
+	 */
+	sector_t (*bmap)(struct address_space *, sector_t);
+	void (*invalidate_folio) (struct folio *, size_t offset, size_t len); /* 截断时作废 folio 的一部分 */
+	/*
+	 * 回收要丢页缓存前问文件系统：私有数据（buffer_head）能不能放。
+	 */
+	bool (*release_folio)(struct folio *, gfp_t);
+	void (*free_folio)(struct folio *folio); /* folio 离开页缓存时的通知 */
+	/*
+	 * 绕过页缓存。和本章的 folio 路径平行。
+	 */
+	ssize_t (*direct_IO)(struct kiocb *, struct iov_iter *iter);
+	/*
+	 * 把内容迁到另一个 folio。MIGRATE_ASYNC 不许睡觉。
+	 */
+	int (*migrate_folio)(struct address_space *, struct folio *dst,
+			struct folio *src, enum migrate_mode);
+	int (*launder_folio)(struct folio *); /* 回收前把脏页洗干净 */
+	/*
+	 * 子页读：这一段是不是已经在 folio 里。
+	 */
+	bool (*is_partially_uptodate) (struct folio *, size_t from,
+			size_t count);
+	/*
+	 * 文件系统私有状态下，这页算不算脏、算不算正在回写。
+	 * 回收用它，避免只看 xarray 标记看漏。
+	 */
+	void (*is_dirty_writeback) (struct folio *, bool *dirty, bool *wb);
+	int (*error_remove_folio)(struct address_space *, struct folio *); /* 硬件中毒时把 folio 从页缓存摘掉 */
+	/* 启用 swap 文件，不是普通页缓存 */
+	int (*swap_activate)(struct swap_info_struct *sis, struct file *file,
+				sector_t *span);
+	void (*swap_deactivate)(struct file *file); /* 停用 swap 文件，不是普通页缓存 */
+};
+```
 
 ---
 
@@ -129,24 +197,42 @@ memcg 有自己的回写域（`cgwb`）。接口和 charge 在 [cgroup/06-memory
 
 `struct shmem_inode_info`（`include/linux/shmem_fs.h:34`）嵌在 inode 里，用 `SHMEM_I(inode)` 从 `vfs_inode` 反查（`:93`）：
 
-| 成员 | 条件 | 中文 |
-|---|---|---|
-| `spinlock_t lock` | 始终 | 保护下面的计数和链表 |
-| `unsigned int seals` | 始终 | memfd seal（`F_SEAL_*`） |
-| `unsigned long flags` | 始终 | `SHMEM_F_NORESERVE`（不预记账）、`SHMEM_F_LOCKED`（不许 swap）、`SHMEM_F_MAPPING_FROZEN`（不许长大、缩小、打洞） |
-| `unsigned long alloced` | 始终 | 已经分给这个文件的数据页 |
-| `unsigned long swapped` | 始终 | 其中正在 swap 上的页 |
-| `struct offset_ctx dir_offsets` | 与下一组同 union | 目录的稳定偏移 |
-| `struct list_head shrinklist` | 同 union | 可收缩的大页 inode |
-| `struct list_head swaplist` | 同 union | 可能在 swap 上的链 |
-| `struct timespec64 i_crtime` | 始终 | 创建时间 |
-| `struct shared_policy policy` | 始终 | 这段 shmem 的 NUMA 策略。`shared_policy` 的成员在 [03-08-numa-policy.md](./03-08-numa-policy.md) |
-| `struct list_head xattrs` | 始终 | xattr |
-| `pgoff_t fallocend` | 始终 | `fallocate` 到过的最大下标 |
-| `unsigned int fsflags` | 始终 | `FS_IOC_GETFLAGS` / `SETFLAGS` |
-| `atomic_t stop_eviction` | 始终 | 非 0 时先别把这个 inode 换出去 |
-| `struct dquot __rcu *i_dquot[MAXQUOTAS]` | `CONFIG_TMPFS_QUOTA` | 配额 |
-| `struct inode vfs_inode` | 始终 | 嵌进去的 VFS inode，必须能 `container_of` |
+```c
+struct shmem_inode_info {
+	spinlock_t		lock;		/* 保护下面的计数和链表 */
+	unsigned int		seals;		/* memfd seal（F_SEAL_*） */
+	/*
+	 * SHMEM_F_NORESERVE（不预记账）、SHMEM_F_LOCKED（不许 swap）、
+	 * SHMEM_F_MAPPING_FROZEN（不许长大、缩小、打洞）。
+	 */
+	unsigned long		flags;
+	unsigned long		alloced;	/* 已经分给这个文件的数据页 */
+	unsigned long		swapped;	/* 其中正在 swap 上的页 */
+	/*
+	 * 目录偏移与下面两条链同一时间只活一组。
+	 */
+	union {
+		struct offset_ctx	dir_offsets;	/* 目录的稳定偏移 */
+		struct {
+			struct list_head shrinklist;	/* 可收缩的大页 inode */
+			struct list_head swaplist;	/* 可能在 swap 上的链 */
+		};
+	};
+	struct timespec64	i_crtime;	/* 创建时间 */
+	/*
+	 * 这段 shmem 的 NUMA 策略。shared_policy 的成员在 03-08-numa-policy.md。
+	 */
+	struct shared_policy	policy;
+	struct list_head	xattrs;		/* xattr */
+	pgoff_t			fallocend;	/* fallocate 到过的最大下标 */
+	unsigned int		fsflags;	/* FS_IOC_GETFLAGS / SETFLAGS */
+	atomic_t		stop_eviction;	/* 非 0 时先别把这个 inode 换出去 */
+#ifdef CONFIG_TMPFS_QUOTA
+	struct dquot __rcu	*i_dquot[MAXQUOTAS];	/* 配额 */
+#endif
+	struct inode		vfs_inode;	/* 嵌进去的 VFS inode，必须能 container_of */
+};
+```
 
 缺页入口 `shmem_fault`（`mm/shmem.c:2713`）进 `shmem_get_folio_gfp`（`:2431`）：
 

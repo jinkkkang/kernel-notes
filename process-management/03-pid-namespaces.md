@@ -9,23 +9,23 @@
 ```c
 struct upid {
 	int nr;                      /* 在该 ns 内的数字 */
-	struct pid_namespace *ns;
+	struct pid_namespace *ns;    /* 该编号所属的 pid ns */
 };
 
 struct pid {
-	refcount_t count;
+	refcount_t count;            /* 引用计数 */
 	unsigned int level;          /* 最深 ns 层级 */
-	spinlock_t lock;
+	spinlock_t lock;             /* 保护 proc 的 inodes 链 */
 	struct {
-		u64 ino;
-		struct rhash_head pidfs_hash;
-		struct dentry *stashed;
+		u64 ino;                      /* pidfs inode 号 */
+		struct rhash_head pidfs_hash; /* pidfs inode 号的哈希节点 */
+		struct dentry *stashed;       /* pidfs 暂存的 dentry */
 		struct pidfs_attr *attr; /* pidfs / pidfd */
 	};
 	struct hlist_head tasks[PIDTYPE_MAX]; /* PID/TGID/PGID/SID */
-	struct hlist_head inodes;
+	struct hlist_head inodes;            /* proc 目录 inode，退出时冲 dcache */
 	wait_queue_head_t wait_pidfd;        /* pidfd 通知 */
-	struct rcu_head rcu;
+	struct rcu_head rcu;                 /* free_pid 经 call_rcu 再 put_pid */
 	struct upid numbers[];               /* 柔性数组：每层一个 upid */
 };
 ```
@@ -38,20 +38,33 @@ struct pid {
 
 `include/linux/pid_namespace.h:26-50`：
 
-| 成员 | 含义 |
-|---|---|
-| `idr` | 号分配器 |
-| `pid_allocated` | 已分配计数（含 `PIDNS_ADDING`） |
-| `child_reaper` | 该 ns 的 init（收尸者） |
-| `pid_cachep` | `struct pid` 的 kmem_cache |
-| `level` | 嵌套深度，init_pid_ns 为 0 |
-| `pid_max` | 本 ns 上限 |
-| `parent` | 父 pid ns |
-| `user_ns` | 关联的 user ns |
-| `ucounts` | 资源计数 |
-| `reboot` | 该 ns reboot 时的 group exit code |
-| `ns` | `ns_common` |
-| `work` | 销毁工作 |
+```c
+struct pid_namespace {
+	struct idr idr;				/* 号分配器 */
+	struct rcu_head rcu;			/* 销毁时 call_rcu 延迟释放 */
+	unsigned int pid_allocated;		/* 已分配计数（含 PIDNS_ADDING） */
+#ifdef CONFIG_SYSCTL
+#if defined(CONFIG_MEMFD_CREATE)
+	int memfd_noexec_scope;			/* 本 ns 的 vm.memfd_noexec 作用域 */
+#endif
+	struct ctl_table_set set;		/* 本 ns 的 sysctl set */
+	struct ctl_table_header *sysctls;	/* 本 ns 注册的 sysctl 表头 */
+#endif
+	struct task_struct *child_reaper;	/* 该 ns 的 init（收尸者） */
+	struct kmem_cache *pid_cachep;		/* struct pid 的 kmem_cache */
+	unsigned int level;			/* 嵌套深度，init_pid_ns 为 0 */
+	int pid_max;				/* 本 ns 上限 */
+	struct pid_namespace *parent;		/* 父 pid ns */
+#ifdef CONFIG_BSD_PROCESS_ACCT
+	struct fs_pin *bacct;			/* BSD 进程记账的 fs_pin */
+#endif
+	struct user_namespace *user_ns;		/* 关联的 user ns */
+	struct ucounts *ucounts;		/* 资源计数 */
+	int reboot;				/* 该 ns reboot 时的 group exit code */
+	struct ns_common ns;			/* ns_common */
+	struct work_struct work;		/* 引用归零后沿 parent 链销毁 */
+} __randomize_layout;
+```
 
 `MAX_PID_NS_LEVEL` = 32。`RESERVED_PIDS` = 300（低号保留）。
 

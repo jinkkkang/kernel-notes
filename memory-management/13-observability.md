@@ -293,55 +293,98 @@ __damon_start(ctx)                        # core.c:1935，调用时已持 damon_
 
 嵌在 `damon_ctx` 开头。时间单位是微秒。
 
-| 成员 | 中文 |
-|---|---|
-| `unsigned long sample_interval` | 两次采样的间隔。每次看 region 在上一个间隔里有没有被访问 |
-| `unsigned long aggr_interval` | 聚合间隔。这段时间里把访问累加到 `damon_region->nr_accesses`，到点清零 |
-| `unsigned long ops_update_interval` | 隔这么久检查监控目标要不要更新（虚拟地址监控时，应用 `mmap` 会改区间） |
-| `struct damon_intervals_goal intervals_goal` | 自动调 sample/aggr 的目标。`aggrs == 0` 时整结构被忽略 |
-| `unsigned long min_nr_regions` | 自适应 region 数下限 |
-| `unsigned long max_nr_regions` | 上限 |
-| `unsigned long aggr_samples` | 私有。`aggr_interval / sample_interval`。外部调 `damon_set_attrs` 时这个字段可以不填，函数自己算；kdamond 内部再调时保留调用者填的值 |
+```c
+struct damon_attrs {
+	/*
+	 * 两次采样的间隔。每次看 region 在上一个间隔里有没有被访问。
+	 */
+	unsigned long sample_interval;
+	/*
+	 * 聚合间隔。这段时间里把访问累加到 damon_region->nr_accesses，到点清零。
+	 */
+	unsigned long aggr_interval;
+	/*
+	 * 隔这么久检查监控目标要不要更新。虚拟地址监控时，应用 mmap 会改区间。
+	 */
+	unsigned long ops_update_interval;
+	/*
+	 * 自动调 sample/aggr 的目标。aggrs == 0 时整结构被忽略。
+	 */
+	struct damon_intervals_goal intervals_goal;
+	unsigned long min_nr_regions;		/* 自适应 region 数下限 */
+	unsigned long max_nr_regions;		/* 上限 */
+/* private: internal use only */
+	/*
+	 * aggr_interval / sample_interval。外部调 damon_set_attrs 时这个字段
+	 * 可以不填，函数自己算；kdamond 内部再调时保留调用者填的值。
+	 */
+	unsigned long aggr_samples;
+};
+```
 
 `struct damon_intervals_goal`（`:735`）：
 
-| 成员 | 中文 |
-|---|---|
-| `unsigned long access_bp` | 目标访问事件比例，单位 bp（1/10000） |
-| `unsigned long aggrs` | 在多少次聚合里达到这个比例。0 表示关闭自动调节 |
-| `unsigned long min_sample_us` | 调出来的采样间隔下限 |
-| `unsigned long max_sample_us` | 上限 |
+```c
+struct damon_intervals_goal {
+	unsigned long access_bp;		/* 目标访问事件比例，单位 bp（1/10000） */
+	/*
+	 * 在多少次聚合里达到这个比例。0 表示关闭自动调节。
+	 */
+	unsigned long aggrs;
+	unsigned long min_sample_us;		/* 调出来的采样间隔下限 */
+	unsigned long max_sample_us;		/* 上限 */
+};
+```
 
 ### `struct damon_ctx`（`:854`）
 
-头文件把一部分标了 public，其余是 private。全部成员如下。
+头文件把一部分标了 public，其余是 private。全部成员如下。可见性沿用头文件里的 kernel-doc 标记。
 
-| 成员 | 可见性 | 中文 |
-|---|---|---|
-| `struct damon_attrs attrs` | public（结构开头） | 上面那组间隔和 region 数 |
-| `unsigned long passed_sample_intervals` | private | 这个 ctx 启动后已经过去多少个采样间隔 |
-| `unsigned long next_aggregation_sis` | private | 下次聚合前还要过多少个采样间隔 |
-| `unsigned long next_ops_update_sis` | private | 下次更新监控目标前还要过多少个 |
-| `unsigned long next_intervals_tune_sis` | private | 下次自动调间隔前还要过多少个 |
-| `struct completion kdamond_started` | private | `__damon_start` 等 kdamond 真正跑起来 |
-| `unsigned long *regions_score_histogram` | private | scheme quota 排序用的直方图 |
-| `struct list_head call_controls` | private | `damon_call_control` 链表。kdamond 之外的线程用 `damon_call()` 把活交进来 |
-| `bool call_controls_obsolete` | private | 上面这张表过期了 |
-| `struct mutex call_controls_lock` | private | 保护 call_controls |
-| `struct damos_walk_control *walk_control` | private | `damos_walk()` 的控制块 |
-| `bool walk_control_obsolete` | private | walk 控制块过期 |
-| `struct mutex walk_control_lock` | private | 保护 walk_control |
-| `bool maybe_corrupted` | private | 注释写目前只在 `damon_commit_ctx()` 失败时置位 |
-| `struct task_struct *kdamond` | private | 这个 ctx 的内核线程。NULL 表示没在跑 |
-| `struct mutex kdamond_lock` | private | 保护 `kdamond` |
-| `unsigned long addr_unit` | public | core 和 ops 之间的地址换算比例 |
-| `unsigned long min_region_sz` | public | region 最小尺寸 |
-| `bool pause` | public | 让 kdamond 主循环暂停 |
-| `struct damon_operations ops` | private | 这套用例的采样 / 目标有效性回调 |
-| `struct list_head adaptive_targets` | private | `damon_target` 链表 |
-| `struct list_head probes` | private | `damon_probe` 链表 |
-| `struct list_head schemes` | private | `damos` scheme 链表 |
-| `struct rnd_state rnd_state` | private | `damon_rand()` 用的 per-ctx PRNG 状态 |
+```c
+struct damon_ctx {
+	struct damon_attrs attrs;		/* public。上面那组间隔和 region 数 */
+
+/* private: internal use only */
+	/* 这个 ctx 启动后已经过去多少个采样间隔 */
+	unsigned long passed_sample_intervals;
+	/* 下次聚合前还要过多少个采样间隔 */
+	unsigned long next_aggregation_sis;
+	/* 下次更新监控目标前还要过多少个 */
+	unsigned long next_ops_update_sis;
+	/* 下次自动调间隔前还要过多少个 */
+	unsigned long next_intervals_tune_sis;
+	/* __damon_start 等 kdamond 真正跑起来 */
+	struct completion kdamond_started;
+	unsigned long *regions_score_histogram; /* scheme quota 排序用的直方图 */
+	/*
+	 * damon_call_control 链表。kdamond 之外的线程用 damon_call() 把活交进来。
+	 */
+	struct list_head call_controls;
+	bool call_controls_obsolete;		/* 上面这张表过期了 */
+	struct mutex call_controls_lock;	/* 保护 call_controls */
+	struct damos_walk_control *walk_control; /* damos_walk() 的控制块 */
+	bool walk_control_obsolete;		/* walk 控制块过期 */
+	struct mutex walk_control_lock;		/* 保护 walk_control */
+	/* 注释写目前只在 damon_commit_ctx() 失败时置位 */
+	bool maybe_corrupted;
+	/* 这个 ctx 的内核线程。NULL 表示没在跑 */
+	struct task_struct *kdamond;
+	struct mutex kdamond_lock;		/* 保护 kdamond */
+
+/* public: */
+	unsigned long addr_unit;		/* core 和 ops 之间的地址换算比例 */
+	unsigned long min_region_sz;		/* region 最小尺寸 */
+	bool pause;				/* 让 kdamond 主循环暂停 */
+
+/* private: */
+	/* 这套用例的采样 / 目标有效性回调 */
+	struct damon_operations ops;
+	struct list_head adaptive_targets;	/* damon_target 链表 */
+	struct list_head probes;		/* damon_probe 链表 */
+	struct list_head schemes;		/* damos scheme 链表 */
+	struct rnd_state rnd_state;		/* damon_rand() 用的 per-ctx PRNG 状态 */
+};
+```
 
 kdamond 跑起来之后，别的线程碰这个 ctx 要走 `damon_call()` 或 `damos_walk()`。直接改链表会和采样线程赛跑。线程在所有 target 都无效，或有人 `damon_stop()` 时退出。pid 用 `damon_kdamond_pid()` 取。
 

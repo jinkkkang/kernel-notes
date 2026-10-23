@@ -32,12 +32,23 @@
 
 `struct balloon_dev_info`（`balloon.h:53`）全部成员：
 
-| 成员 | 中文 |
-|---|---|
-| `unsigned long isolated_pages` | 正被迁移隔离的气球页数 |
-| `struct list_head pages` | 已经交给宿主的页 |
-| `int (*migratepage)(...)` | 压缩要搬家时的回调。气球页是 `PageOffline` + `PageMovableOps`，可以迁移，但迁移要先 inflate 新页、再 deflate 旧页（`virtio_balloon.c:847` 一带的注释） |
-| `bool adjust_managed_page_count` | 为真时，enqueue/dequeue 会改 zone 的 `managed_pages`。guest 的 `MemTotal` 会跟着掉或涨 |
+```c
+struct balloon_dev_info {
+	unsigned long isolated_pages;		/* 正被迁移隔离的气球页数 */
+	struct list_head pages;			/* 已经交给宿主的页 */
+	/*
+	 * 压缩要搬家时的回调。气球页是 PageOffline + PageMovableOps，可以迁移，
+	 * 但迁移要先 inflate 新页、再 deflate 旧页（virtio_balloon.c:847 一带的注释）。
+	 */
+	int (*migratepage)(struct balloon_dev_info *, struct page *newpage,
+			struct page *page, enum migrate_mode mode);
+	/*
+	 * 为真时，enqueue/dequeue 会改 zone 的 managed_pages。guest 的 MemTotal
+	 * 会跟着掉或涨。
+	 */
+	bool adjust_managed_page_count;
+};
+```
 
 文件头注释（`balloon.h:9`）规定了竞态：
 
@@ -57,13 +68,27 @@ stats 队列上报 guest 的空闲、缓存、可用。宿主调度器用它决�
 
 `struct page_reporting_dev_info`（`include/linux/page_reporting.h:11`）全部成员：
 
-| 成员 | 中文 |
-|---|---|
-| `int (*report)(...)` | 把 sg 里的页「处理」掉。virtio-balloon 的实现是 `virtballoon_free_page_report`（`virtio_balloon.c:202`），把 PFN 推进 `reporting_vq` |
-| `struct delayed_work work` | 后台处理 |
-| `atomic_t state` | 空闲 / 已请求 / 正在跑。用来合并多次通知 |
-| `unsigned int order` | 最小报告阶。设备可以指定；未指定时用 `pageblock_order` |
-| `unsigned int capacity` | 一批最多多少页。0 表示用 `PAGE_REPORTING_CAPACITY`（32，`:8`） |
+```c
+struct page_reporting_dev_info {
+	/*
+	 * 把 sg 里的页「处理」掉。virtio-balloon 的实现是
+	 * virtballoon_free_page_report（virtio_balloon.c:202），把 PFN 推进
+	 * reporting_vq。
+	 */
+	int (*report)(struct page_reporting_dev_info *prdev,
+		      struct scatterlist *sg, unsigned int nents);
+	struct delayed_work work;		/* 后台处理 */
+	atomic_t state;				/* 空闲 / 已请求 / 正在跑。用来合并多次通知 */
+	/*
+	 * 最小报告阶。设备可以指定；未指定时用 pageblock_order。
+	 */
+	unsigned int order;
+	/*
+	 * 一批最多多少页。0 表示用 PAGE_REPORTING_CAPACITY（32，:8）。
+	 */
+	unsigned int capacity;
+};
+```
 
 全局 `page_reporting_order`（`mm/page_reporting.c:16`）是模块参数（`:37`，`0644`）。`page_reporting_register`（`:360`）在设备没指定 order 时把它设成 `prdev->order` 或 `pageblock_order`（`:380`）。
 
@@ -161,26 +186,36 @@ balloon inflate 从 guest buddy 拿页。guest 若开着 THP，inflate 会把高
 
 已核对的成员：
 
-| 成员 | 中文 |
-|---|---|
-| `struct virtio_device *vdev` | virtio 设备 |
-| `bool unplug_all_required` | 启动时可能得先把内存全部拔掉 |
-| `struct work_struct wq` | 处理插拔请求 |
-| `atomic_t wq_active` / `config_changed` | 工作队列是否在跑、配置是否变了 |
-| `struct virtqueue *vq` | guest 向宿主发请求的队列 |
-| `wait_queue_head_t host_resp` | 等宿主回应 |
-| `struct virtio_mem_req req` / `resp` | 一对请求和响应的缓冲 |
-| `uint64_t plugged_size` | 当前已经插上的大小 |
-| `uint64_t requested_size` | 宿主要求的大小 |
-| `uint64_t device_block_size` | 和设备通信的块大小 |
-| `int nid` | 这些内存所属 NUMA 节点 |
-| `uint64_t addr` | 区域物理起始 |
-| `uint64_t region_size` / `usable_region_size` | 最大 / 当前可用 |
-| `struct resource *parent_resource` | 资源树里的父节点 |
-| `const char *resource_name` | `add_memory_driver_managed()` 用的名字 |
-| `int mgid` | memory group |
-| `atomic64_t offline_size` / `uint64_t offline_threshold` | 还没 online 的大小。默认阈值 1GB（`:154`），避免插得太快把系统插到 OOM |
-| `bool in_sbm` | 真表示走 sub-block 模式，否则 big-block |
+```c
+struct virtio_mem {
+	struct virtio_device *vdev;		/* virtio 设备 */
+	bool unplug_all_required;		/* 启动时可能得先把内存全部拔掉 */
+	struct work_struct wq;			/* 处理插拔请求 */
+	atomic_t wq_active;			/* 工作队列是否在跑 */
+	atomic_t config_changed;		/* 配置是否变了 */
+	struct virtqueue *vq;			/* guest 向宿主发请求的队列 */
+	wait_queue_head_t host_resp;		/* 等宿主回应 */
+	struct virtio_mem_req req;		/* 请求缓冲 */
+	struct virtio_mem_resp resp;		/* 响应缓冲 */
+	uint64_t plugged_size;			/* 当前已经插上的大小 */
+	uint64_t requested_size;		/* 宿主要求的大小 */
+	uint64_t device_block_size;		/* 和设备通信的块大小 */
+	int nid;				/* 这些内存所属 NUMA 节点 */
+	uint64_t addr;				/* 区域物理起始 */
+	uint64_t region_size;			/* 最大区域 */
+	uint64_t usable_region_size;		/* 当前可用 */
+	struct resource *parent_resource;	/* 资源树里的父节点 */
+	const char *resource_name;		/* add_memory_driver_managed() 用的名字 */
+	int mgid;				/* memory group */
+	atomic64_t offline_size;		/* 还没 online 的大小 */
+	/*
+	 * 默认阈值 1GB（:154），避免插得太快把系统插到 OOM。
+	 */
+	uint64_t offline_threshold;
+	bool in_sbm;				/* 真表示走 sub-block 模式，否则 big-block */
+	/* 此处省略本组未记录的成员 */
+};
+```
 
 插上的内存要经过内存热插拔：`add_memory` → online → 页进 buddy。拔的时候要 offline，不可移动页会让 offline 失败。`ZONE_MOVABLE` 把可拔的范围限制成可移动分配（zone 本身见 [02](./02-physical-layout.md)，online/offline 的函数在 12.9）。
 

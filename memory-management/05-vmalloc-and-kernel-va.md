@@ -27,19 +27,33 @@
 
 ## 5.2 `struct vm_struct`（`vmalloc.h:52`）
 
-| 成员 | 条件 | 中文 |
-|---|---|---|
-| `struct vm_struct *next` | 与 `llnode` 同 union | 早期启动登记 vm 区时的单链表 |
-| `struct llist_node llnode` | 同 union | 出错路径上异步释放 |
-| `void *addr` | 始终 | 这块映射的内核虚拟地址 |
-| `unsigned long size` | 始终 | 字节大小，含 guard 页时比请求大 |
-| `unsigned long flags` | 始终 | `VM_ALLOC`、`VM_MAP`、`VM_IOREMAP` 等。位定义在 `vmalloc.h` 靠前的宏，用之前对一下 |
-| `struct page **pages` | 始终 | 物理页数组。ioremap 可以是 NULL |
-| `unsigned int page_order` | `CONFIG_HAVE_ARCH_HUGE_VMALLOC` | 尝试用多大的页来建页表。不是 buddy order 的保证 |
-| `unsigned long nr_pages` | 始终 | `pages[]` 的长度 |
-| `phys_addr_t phys_addr` | 始终 | ioremap 时的物理地址。普通 vmalloc 为 0 |
-| `const void *caller` | 始终 | 分配调用点，`/proc/vmallocinfo` 用来打印是谁申请的 |
-| `unsigned long requested_size` | 始终 | 调用者要的大小，不含 guard |
+```c
+struct vm_struct {
+	union {
+		struct vm_struct *next;	/* 早期启动登记 vm 区时的单链表 */
+		struct llist_node llnode; /* 出错路径上异步释放 */
+	};
+
+	void			*addr;		/* 这块映射的内核虚拟地址 */
+	unsigned long		size;		/* 字节大小，含 guard 页时比请求大 */
+	/*
+	 * VM_ALLOC、VM_MAP、VM_IOREMAP 等。
+	 * 位定义在 vmalloc.h 靠前的宏，用之前对一下。
+	 */
+	unsigned long		flags;
+	struct page		**pages;	/* 物理页数组，ioremap 可以是 NULL */
+#ifdef CONFIG_HAVE_ARCH_HUGE_VMALLOC
+	/*
+	 * 尝试用多大的页来建页表。不是 buddy order 的保证。
+	 */
+	unsigned int		page_order;
+#endif
+	unsigned long		nr_pages;	/* pages[] 的长度 */
+	phys_addr_t		phys_addr;	/* ioremap 时的物理地址，普通 vmalloc 为 0 */
+	const void		*caller;	/* 分配调用点，/proc/vmallocinfo 用来打印是谁申请的 */
+	unsigned long		requested_size;	/* 调用者要的大小，不含 guard */
+};
+```
 
 ---
 
@@ -47,15 +61,24 @@
 
 vmalloc 区的虚拟地址分配器。空闲和占用是两棵树。
 
-| 成员 | 中文 |
-|---|---|
-| `unsigned long va_start` | 这段虚拟地址起点 |
-| `unsigned long va_end` | 终点 |
-| `struct rb_node rb_node` | 按地址排序的红黑树节点 |
-| `struct list_head list` | 按地址排序的链表 |
-| `unsigned long subtree_max_size` | 在 **空闲树**（`free_vmap_area_root`）里：子树最大空洞，分配时用来剪枝 |
-| `struct vm_struct *vm` | 在 **占用树**（`vmap_area_root`）里：对应的 `vm_struct`。和上一字段同 union |
-| `unsigned long flags` | `vm_map_ram` 等类型标记 |
+```c
+struct vmap_area {
+	unsigned long va_start;		/* 这段虚拟地址起点 */
+	unsigned long va_end;			/* 终点 */
+
+	struct rb_node rb_node;		/* 按地址排序的红黑树节点 */
+	struct list_head list;			/* 按地址排序的链表 */
+
+	/*
+	 * 一个 vmap_area 要么在空闲树，要么在占用树，所以下面两项叠在一起。
+	 */
+	union {
+		unsigned long subtree_max_size;	/* 空闲树：子树最大空洞，分配时用来剪枝 */
+		struct vm_struct *vm;		/* 占用树：对应的 vm_struct */
+	};
+	unsigned long flags;			/* vm_map_ram 等类型标记 */
+};
+```
 
 一个 `vmap_area` 要么在空闲树，要么在占用树，所以 `subtree_max_size` 和 `vm` 可以叠。
 

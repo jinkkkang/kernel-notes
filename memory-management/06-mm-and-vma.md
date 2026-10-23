@@ -16,94 +16,224 @@
 
 ### 引用与地址空间骨架
 
-| 成员 | 条件 | 中文 |
-|---|---|---|
-| `atomic_t mm_count` | 始终，单独 cache line | 「有多少东西抓着这个 mm」。`mm_users` 整体算 1。用 `mmgrab` / `mmdrop`。减到 0 就释放 mm |
-| `struct maple_tree mm_mt` | 始终 | **VMA 的存储**。按虚拟地址索引。老的 `mm->mmap` 链表在 v7.3 的这个结构里已经不在 |
-| `unsigned long mmap_base` | 始终 | mmap 区基址（自顶向下时的起点） |
-| `unsigned long mmap_legacy_base` | 始终 | 自底向上布局的 mmap 基址 |
-| `unsigned long mmap_compat_base` | `CONFIG_HAVE_ARCH_COMPAT_MMAP_BASES` | 32 位兼容进程的 mmap 基址 |
-| `unsigned long mmap_compat_legacy_base` | 同上 | 兼容进程的 legacy 基址 |
-| `unsigned long task_size` | 始终 | 用户空间大小。x86-64 4 级页表约 128TB，和文档布局一致 |
-| `pgd_t *pgd` | 始终 | 这套地址空间的顶级页表 |
-| `atomic_t membarrier_state` | `CONFIG_MEMBARRIER` | membarrier 标志。故意靠近 `pgd`，因为 `switch_mm` 会同时碰它们 |
-| `atomic_t mm_users` | 始终 | 用户侧引用：活着的线程、以及临时 `mmget`。减到 0 时再 `mmdrop` 一次 `mm_count` |
-| `struct mm_mm_cid mm_cid` | 始终 | 每 mm 的并发 ID 存储，调度器用 |
-| `struct sched_cache_group *sched_cache_grp` | 始终 | sched_cache 统计 |
-| `atomic_long_t pgtables_bytes` | `CONFIG_MMU` | 本 mm 页表占的字节。`/proc/meminfo` 的 `PageTables` 是全局的，这里是 per-mm |
-| `int map_count` | 始终 | VMA 个数。`/proc/pid/maps` 的行数，也受 `vm.max_map_count` 限制 |
-| `spinlock_t page_table_lock` | 始终 | 保护页表和一部分计数 |
-| `struct rw_semaphore mmap_lock` | 始终 | 地址空间的大锁。读锁给缺页和查找，写锁给 mmap/munmap。注释特意把它放在这个偏移，让 `count` 和 `owner` 落在不同 cache line |
-| `struct list_head mmlist` | 始终 | 可能换出过的 mm 串在 `init_mm.mmlist` 上，`mmlist_lock` 保护 |
+```c
+/* --- 引用与地址空间骨架 --- */
+struct mm_struct {
+	struct {
+		/*
+		 * 常写的字段单独放一条 cache line。
+		 */
+		struct {
+			/*
+			 * 有多少东西抓着这个 mm。mm_users 整体算 1。
+			 * 用 mmgrab / mmdrop。减到 0 就释放 mm。
+			 */
+			atomic_t mm_count;
+		} ____cacheline_aligned_in_smp;
+
+		/*
+		 * VMA 的存储，按虚拟地址索引。
+		 * 老的 mm->mmap 链表在 v7.3 的这个结构里已经不在。
+		 */
+		struct maple_tree mm_mt;
+
+		unsigned long mmap_base;	/* mmap 区基址，自顶向下时的起点 */
+		unsigned long mmap_legacy_base;	/* 自底向上布局的 mmap 基址 */
+#ifdef CONFIG_HAVE_ARCH_COMPAT_MMAP_BASES
+		unsigned long mmap_compat_base;		/* 32 位兼容进程的 mmap 基址 */
+		unsigned long mmap_compat_legacy_base;	/* 兼容进程的 legacy 基址 */
+#endif
+		unsigned long task_size;	/* 用户空间大小，x86-64 四级页表约 128TB */
+		pgd_t * pgd;			/* 这套地址空间的顶级页表 */
+
+#ifdef CONFIG_MEMBARRIER
+		/*
+		 * membarrier 标志。故意靠近 pgd，因为 switch_mm 会同时碰它们。
+		 */
+		atomic_t membarrier_state;
+#endif
+
+		/*
+		 * 用户侧引用：活着的线程，以及临时 mmget。
+		 * 减到 0 时再 mmdrop 一次 mm_count。
+		 */
+		atomic_t mm_users;
+
+		struct mm_mm_cid mm_cid;	/* 每 mm 的并发 ID 存储，调度器用 */
+		struct sched_cache_group *sched_cache_grp; /* sched_cache 统计 */
+#ifdef CONFIG_MMU
+		/*
+		 * 本 mm 页表占的字节。/proc/meminfo 的 PageTables 是全局的。
+		 */
+		atomic_long_t pgtables_bytes;
+#endif
+		int map_count;			/* VMA 个数，maps 行数，受 vm.max_map_count 限制 */
+
+		spinlock_t page_table_lock;	/* 保护页表和一部分计数 */
+		/*
+		 * 地址空间的大锁。读锁给缺页和查找，写锁给 mmap/munmap。
+		 * 放在这个偏移，让 count 和 owner 落在不同 cache line。
+		 */
+		struct rw_semaphore mmap_lock;
+
+		/*
+		 * 可能换出过的 mm，串在 init_mm.mmlist 上，mmlist_lock 保护。
+		 */
+		struct list_head mmlist;
+```
 
 ### per-VMA 锁与统计
 
-| 成员 | 条件 | 中文 |
-|---|---|---|
-| `struct rcuwait vma_writer_wait` | `CONFIG_PER_VMA_LOCK` | 写者等 per-VMA 读者退出 |
-| `seqcount_t mm_lock_seq` | `CONFIG_PER_VMA_LOCK` | 每次 `mmap_lock` 写加锁/解锁都加。奇数表示写锁正被持有。和 `vma->vm_lock_seq` 比较，判断 VMA 锁是不是写锁 |
-| `struct futex_mm_data futex` | 始终 | 本 mm 的 futex 私有哈希 |
-| `unsigned long hiwater_rss` | 始终 | RSS 高水位（页） |
-| `unsigned long hiwater_vm` | 始终 | 虚拟地址高水位 |
-| `unsigned long total_vm` | 始终 | 映射的总页数。`maps` 里各 VMA 长度之和 |
-| `unsigned long locked_vm` | 始终 | `mlock` 的页 |
-| `atomic64_t pinned_vm` | 始终 | 长期 pin（RDMA、vfio）的页。引用被永久加过 |
-| `unsigned long data_vm` | 始终 | `VM_WRITE & ~VM_SHARED & ~VM_STACK` |
-| `unsigned long exec_vm` | 始终 | `VM_EXEC & ~VM_WRITE & ~VM_STACK` |
-| `unsigned long stack_vm` | 始终 | `VM_STACK` |
-| `vm_flags_t def_flags` | 与下一字段同 union | 新 VMA 的默认标志。注释说这是 VMA 标志迁移期的临时布局 |
-| `vma_flags_t def_vma_flags` | 同 union | 新类型的默认标志 |
-| `seqcount_t write_protect_seq` | 始终 | fork 复制页表等路径把映射写成只读、强迫稍后 COW 时持有 |
-| `spinlock_t arg_lock` | 始终 | 保护下面这组起止地址 |
+```c
+/* --- per-VMA 锁与统计 --- */
+#ifdef CONFIG_PER_VMA_LOCK
+		struct rcuwait vma_writer_wait;	/* 写者等 per-VMA 读者退出 */
+		/*
+		 * 每次 mmap_lock 写加锁或解锁都加。奇数表示写锁正被持有。
+		 * 和 vma->vm_lock_seq 比较，判断 VMA 锁是不是写锁。
+		 */
+		seqcount_t mm_lock_seq;
+#endif
+		struct futex_mm_data futex;	/* 本 mm 的 futex 私有哈希 */
+
+		unsigned long hiwater_rss;	/* RSS 高水位，单位是页 */
+		unsigned long hiwater_vm;	/* 虚拟地址高水位 */
+
+		unsigned long total_vm;		/* 映射的总页数，各 VMA 长度之和 */
+		unsigned long locked_vm;	/* mlock 的页 */
+		atomic64_t pinned_vm;		/* 长期 pin（RDMA、vfio）的页，引用被永久加过 */
+		unsigned long data_vm;		/* VM_WRITE & ~VM_SHARED & ~VM_STACK */
+		unsigned long exec_vm;		/* VM_EXEC & ~VM_WRITE & ~VM_STACK */
+		unsigned long stack_vm;		/* VM_STACK */
+		union {
+			/* VMA 标志迁移期的临时布局 */
+			vm_flags_t def_flags;		/* 新 VMA 的默认标志 */
+			vma_flags_t def_vma_flags;	/* 新类型的默认标志 */
+		};
+
+		/*
+		 * fork 复制页表等路径把映射写成只读、强迫稍后 COW 时持有。
+		 */
+		seqcount_t write_protect_seq;
+
+		spinlock_t arg_lock;		/* 保护下面这组起止地址 */
+```
 
 ### 段、auxv、RSS
 
-| 成员 | 条件 | 中文 |
-|---|---|---|
-| `start_code` / `end_code` / `start_data` / `end_data` | 始终 | 代码段、数据段。`/proc/pid/stat` 用 |
-| `start_brk` / `brk` / `start_stack` | 始终 | 堆的起点、当前 brk、栈起点 |
-| `arg_start` / `arg_end` / `env_start` / `env_end` | 始终 | argv、envp |
-| `unsigned long saved_auxv[AT_VECTOR_SIZE]` | 始终 | ELF 辅助向量，给 `/proc/pid/auxv` |
-| `unsigned long saved_e_flags` | `CONFIG_ARCH_HAS_ELF_CORE_EFLAGS` | ELF 头里的 ABI 标志，写 core dump |
-| `struct percpu_counter rss_stat[NR_MM_COUNTERS]` | 始终 | anon / file / shmem 等 RSS。`/proc/pid/status` 的 `RssAnon`、`RssFile`、`RssShmem` |
-| `struct linux_binfmt *binfmt` | 始终 | 装载这个进程的 binfmt（ELF 等） |
-| `mm_context_t context` | 始终 | 架构私有。x86 上有 LDT、LAM、pkey 之类 |
-| `mm_flags_t flags` | 始终 | mm 标志。必须用 `mm_flags_*` 访问，注释写明了 |
+```c
+/* --- 段、auxv、RSS --- */
+		unsigned long start_code;	/* 代码段起点，/proc/pid/stat 用 */
+		unsigned long end_code;		/* 代码段终点 */
+		unsigned long start_data;	/* 数据段起点 */
+		unsigned long end_data;		/* 数据段终点 */
+		unsigned long start_brk;	/* 堆的起点 */
+		unsigned long brk;		/* 当前 brk */
+		unsigned long start_stack;	/* 栈起点 */
+		unsigned long arg_start;	/* argv 起点 */
+		unsigned long arg_end;		/* argv 终点 */
+		unsigned long env_start;	/* envp 起点 */
+		unsigned long env_end;		/* envp 终点 */
+
+		unsigned long saved_auxv[AT_VECTOR_SIZE]; /* ELF 辅助向量，给 /proc/pid/auxv */
+#ifdef CONFIG_ARCH_HAS_ELF_CORE_EFLAGS
+		unsigned long saved_e_flags;	/* ELF 头里的 ABI 标志，写 core dump */
+#endif
+
+		/*
+		 * anon / file / shmem 等 RSS。
+		 * /proc/pid/status 的 RssAnon、RssFile、RssShmem。
+		 */
+		struct percpu_counter rss_stat[NR_MM_COUNTERS];
+
+		struct linux_binfmt *binfmt;	/* 装载这个进程的 binfmt，ELF 等 */
+
+		mm_context_t context;		/* 架构私有，x86 上有 LDT、LAM、pkey */
+
+		mm_flags_t flags;		/* mm 标志，必须用 mm_flags_* 访问 */
+```
 
 ### 外围子系统挂在 mm 上的钩子
 
-| 成员 | 条件 | 中文 |
-|---|---|---|
-| `spinlock_t ioctx_lock` | `CONFIG_AIO` | 保护 AIO 上下文表 |
-| `struct kioctx_table __rcu *ioctx_table` | `CONFIG_AIO` | AIO |
-| `struct task_struct __rcu *owner` | `CONFIG_MEMCG` | 这个 mm 的「户主」，memcg 归属看它。改它的条件写在注释里：当前必须是 owner、当前的 mm 已经不是这个 mm、新 owner 的 mm 是它、并且拿着新 owner 的 `alloc_lock` |
-| `struct file __rcu *exe_file` | 始终 | `/proc/pid/exe` |
-| `struct mmu_notifier_subscriptions *notifier_subscriptions` | `CONFIG_MMU_NOTIFIER` | KVM、RDMA 等二级页表的失效通知 |
-| `pgtable_t pmd_huge_pte` | THP 且没有 `CONFIG_SPLIT_PMD_PTLOCKS` | 拆 PMD 时暂存的 PTE 页。`page_table_lock` 保护 |
-| `unsigned long numa_next_scan` | `CONFIG_NUMA_BALANCING` | 下次把 PTE 改成 PROT_NONE 以触发 NUMA hint fault 的时间 |
-| `unsigned long numa_scan_offset` | 同上 | 扫描续点 |
-| `int numa_scan_seq` | 同上 | 防止两个线程同时改 PROT_NONE |
-| `atomic_t tlb_flush_pending` | 始终 | 有一批 TLB 刷新正在进行。迁移 PROT_NONE 页时必须先刷 |
-| `atomic_t tlb_flush_batched` | `CONFIG_ARCH_WANT_BATCHED_UNMAP_TLB_FLUSH` | 批量 unmap TLB。见 `flush_tlb_batched_pending()` |
-| `struct uprobes_state uprobes_state` | 始终 | uprobe |
-| `struct rcu_head delayed_drop` | `CONFIG_PREEMPT_RT` | RT 上延迟 mmdrop |
-| `atomic_long_t hugetlb_usage` | `CONFIG_HUGETLB_PAGE` | 本 mm 的 hugetlb 用量 |
-| `struct work_struct async_put_work` | 始终 | 异步 `mmput` |
-| `struct iommu_mm_data *iommu_mm` | `CONFIG_IOMMU_MM_DATA` | IOMMU 与这个 mm 的绑定 |
-| `unsigned long ksm_merging_pages` | `CONFIG_KSM` | 正在被 KSM 合并的页，不含 zero page |
-| `unsigned long ksm_rmap_items` | `CONFIG_KSM` | 检查过的 rmap 项，含没合并成的 |
-| `atomic_long_t ksm_zero_pages` | `CONFIG_KSM` | 和内核零页合并的空页（`use_zero_pages`） |
-| `struct { ... } lru_gen` | `CONFIG_LRU_GEN_WALKS_MMU` | 见下 |
-| `mm_id_t mm_id` | `CONFIG_MM_ID` | 稳定的 mm 标识，folio 的 `_mm_id[]` 用它 |
-| `char flexible_array[]` | 始终，在匿名结构体外 | 末尾柔性数组，实际放 `mm_cpumask` |
+```c
+/* --- 外围子系统挂在 mm 上的钩子 --- */
+#ifdef CONFIG_AIO
+		spinlock_t ioctx_lock;			/* 保护 AIO 上下文表 */
+		struct kioctx_table __rcu *ioctx_table;	/* AIO 上下文表 */
+#endif
+#ifdef CONFIG_MEMCG
+		/*
+		 * 这个 mm 的户主，memcg 归属看它。要改它，当前必须是 owner，
+		 * 当前的 mm 已经不是这个 mm，新 owner 的 mm 是它，
+		 * 并且拿着新 owner 的 alloc_lock。
+		 */
+		struct task_struct __rcu *owner;
+#endif
+		struct file __rcu *exe_file;	/* /proc/pid/exe */
+#ifdef CONFIG_MMU_NOTIFIER
+		/* KVM、RDMA 等二级页表的失效通知 */
+		struct mmu_notifier_subscriptions *notifier_subscriptions;
+#endif
+#if defined(CONFIG_TRANSPARENT_HUGEPAGE) && !defined(CONFIG_SPLIT_PMD_PTLOCKS)
+		pgtable_t pmd_huge_pte;		/* 拆 PMD 时暂存的 PTE 页，page_table_lock 保护 */
+#endif
+#ifdef CONFIG_NUMA_BALANCING
+		/*
+		 * 下次把 PTE 改成 PROT_NONE、触发 NUMA hint fault 的时间。
+		 */
+		unsigned long numa_next_scan;
+		unsigned long numa_scan_offset;	/* 扫描续点 */
+		int numa_scan_seq;		/* 防止两个线程同时改 PROT_NONE */
+#endif
+		/*
+		 * 有一批 TLB 刷新正在进行。迁移 PROT_NONE 页时必须先刷。
+		 */
+		atomic_t tlb_flush_pending;
+#ifdef CONFIG_ARCH_WANT_BATCHED_UNMAP_TLB_FLUSH
+		atomic_t tlb_flush_batched;	/* 批量 unmap TLB，见 flush_tlb_batched_pending() */
+#endif
+		struct uprobes_state uprobes_state; /* uprobe */
+#ifdef CONFIG_PREEMPT_RT
+		struct rcu_head delayed_drop;	/* RT 上延迟 mmdrop */
+#endif
+#ifdef CONFIG_HUGETLB_PAGE
+		atomic_long_t hugetlb_usage;	/* 本 mm 的 hugetlb 用量 */
+#endif
+		struct work_struct async_put_work; /* 异步 mmput */
+#ifdef CONFIG_IOMMU_MM_DATA
+		struct iommu_mm_data *iommu_mm;	/* IOMMU 与这个 mm 的绑定 */
+#endif
+#ifdef CONFIG_KSM
+		unsigned long ksm_merging_pages; /* 正在被 KSM 合并的页，不含 zero page */
+		unsigned long ksm_rmap_items;	/* 检查过的 rmap 项，含没合并成的 */
+		atomic_long_t ksm_zero_pages;	/* 和内核零页合并的空页（use_zero_pages） */
+#endif /* CONFIG_KSM */
+#ifdef CONFIG_LRU_GEN_WALKS_MMU
+		struct {
+			/* 这个 mm 挂在 lru_gen_mm_list 上，MGLRU 走页表时遍历 */
+			struct list_head list;
+			/*
+			 * 切到这个 mm 时置位，提示页表扫描者：
+			 * 自从上次清位以后它被用过。
+			 */
+			unsigned long bitmap;
+#ifdef CONFIG_MEMCG
+			struct mem_cgroup *memcg; /* 指向 owner 的 memcg */
+#endif
+		} lru_gen;
+#endif /* CONFIG_LRU_GEN_WALKS_MMU */
+#ifdef CONFIG_MM_ID
+		mm_id_t mm_id;			/* 稳定的 mm 标识，folio 的 _mm_id[] 用它 */
+#endif /* CONFIG_MM_ID */
+	} __randomize_layout;
 
-`lru_gen` 内嵌结构（`:1404`）的成员：
-
-| 成员 | 条件 | 中文 |
-|---|---|---|
-| `struct list_head list` | 始终 | 这个 mm 挂在 `lru_gen_mm_list` 上，MGLRU 走页表时遍历 |
-| `unsigned long bitmap` | 始终 | 切到这个 mm 时置位，提示页表扫描者「自从上次清位以后它被用过」 |
-| `struct mem_cgroup *memcg` | `CONFIG_MEMCG` | 指向 owner 的 memcg |
+	/*
+	 * 末尾柔性数组，实际放 mm_cpumask，按 nr_cpu_ids 动态加长。
+	 * 必须留在结构体末尾。
+	 */
+	char flexible_array[] __aligned(__alignof__(unsigned long));
+};
+```
 
 ---
 
@@ -111,35 +241,110 @@
 
 第一 cache line 给查树用：起止地址和 `vm_mm`。
 
-| 成员 | 条件 | 中文 |
-|---|---|---|
-| `unsigned long vm_start` | 与 `vm_freeptr` 同 union | VMA 覆盖 `[vm_start, vm_end)` |
-| `unsigned long vm_end` | 同上 | 终点，开区间 |
-| `freeptr_t vm_freeptr` | 同 union | `SLAB_TYPESAFE_BY_RCU` 回收 VMA 对象时用的空闲指针。活着的 VMA 不使用它 |
-| `struct mm_struct *vm_mm` | 始终 | 属于哪个地址空间。RCU 不稳定读者可以读这个字段 |
-| `pgprot_t vm_page_prot` | 始终 | 这一段的页保护。由 `vm_flags` 算出来，缺页建 PTE 时用 |
-| `const vm_flags_t vm_flags` | 与 `flags` 同 union | `VM_*`。注释要求用 `vm_flags_set/clear/mod` 或 `vma_flags_*` 改，不要直接写 |
-| `vma_flags_t flags` | 同 union | 标志类型迁移期的另一视图 |
-| `unsigned int vm_lock_seq` | `CONFIG_PER_VMA_LOCK` | 和 `mm->mm_lock_seq` 配对。写它要同时持有 `mmap_lock` 写锁，并且 `vm_refcnt` 处于排除读者的状态。允许溢出 |
-| `unsigned int __vm_anon_pgoff_lo` | 始终 | 匿名页偏移的低 32 位。见 `vma_start_anon_pgoff()` |
-| `struct list_head anon_vma_chain` | 始终 | 链到 `anon_vma`。`mmap_lock` 和 `page_table_lock` 一起序列化 |
-| `struct anon_vma *anon_vma` | 始终 | 匿名页反向映射的根。文件私有映射在 COW 之后也会有。`MAP_SHARED` 文件映射只有 `i_mmap`，没有 anon_vma |
-| `const struct vm_operations_struct *vm_ops` | 始终 | `fault` / `huge_fault` / `map_pages` 等。匿名映射可以是 NULL |
-| `unsigned long vm_pgoff` | 始终 | 相对 `vm_file` 的页偏移 |
-| `struct file *vm_file` | 始终 | 映射的文件。匿名为 NULL |
-| `void *vm_private_data` | 始终 | 驱动私有。注释说以前叫 `vm_pte` |
-| `atomic_long_t swap_readahead_info` | `CONFIG_SWAP` | swap 预读游标 |
-| `struct vm_region *vm_region` | `!CONFIG_MMU` | NOMMU 的区域。有 MMU 的 x86 没有这个字段 |
-| `struct mempolicy *vm_policy` | `CONFIG_NUMA` | 这个 VMA 的 NUMA 策略 |
-| `struct vma_numab_state *numab_state` | `CONFIG_NUMA_BALANCING` | NUMA balancing 状态 |
-| `refcount_t vm_refcnt` | `CONFIG_PER_VMA_LOCK`，cache line 对齐 | 0 表示已脱离，读者不能再加。1 表示挂着且没上读锁（或写锁）。大于 1 是读者数量。`VM_REFCNT_EXCLUDE_READERS_FLAG` 及以上表示正在踢读者，禁止新的读者进入。RCU 读者可以读这个字段。完整状态机在源码注释 `:1007-1044` |
-| `struct lockdep_map vmlock_dep_map` | `CONFIG_PER_VMA_LOCK` 且 `CONFIG_DEBUG_LOCK_ALLOC` | lockdep |
-| `unsigned int __vm_anon_pgoff_hi` | `CONFIG_64BIT` | 匿名页偏移的高 32 位 |
-| `struct rb_node rb` | 嵌在 `shared` 里 | 链进 `address_space->i_mmap` 区间树 |
-| `unsigned long rb_subtree_last` | 嵌在 `shared` 里 | 区间树子树的最大结尾 |
-| `struct anon_vma_name *anon_name` | `CONFIG_ANON_VMA_NAME` | `[anon:name]`。`mmap_lock` 序列化，用 `anon_vma_name()` 读 |
-| `struct vm_userfaultfd_ctx vm_userfaultfd_ctx` | 始终 | userfaultfd 上下文。没注册时是空 |
-| `struct pfnmap_track_ctx *pfnmap_track_ctx` | `__HAVE_PFNMAP_TRACKING` | PFN map 跟踪 |
+```c
+struct vm_area_struct {
+	union {
+		struct {
+			unsigned long vm_start;	/* 覆盖 [vm_start, vm_end) */
+			unsigned long vm_end;	/* 终点，开区间 */
+		};
+		/*
+		 * SLAB_TYPESAFE_BY_RCU 回收 VMA 对象时用的空闲指针。
+		 * 活着的 VMA 不使用它。
+		 */
+		freeptr_t vm_freeptr;
+	};
+
+	/*
+	 * 属于哪个地址空间。RCU 不稳定读者可以读这个字段。
+	 */
+	struct mm_struct *vm_mm;
+	pgprot_t vm_page_prot;		/* 由 vm_flags 算出的页保护，缺页建 PTE 时用 */
+
+	/*
+	 * VM_*。用 vm_flags_set/clear/mod 或 vma_flags_* 改，不要直接写。
+	 * flags 是标志类型迁移期的另一视图。
+	 */
+	union {
+		const vm_flags_t vm_flags;
+		vma_flags_t flags;
+	};
+
+#ifdef CONFIG_PER_VMA_LOCK
+	/*
+	 * 和 mm->mm_lock_seq 配对。写它要同时持有 mmap_lock 写锁，
+	 * 并且 vm_refcnt 处于排除读者的状态。允许溢出。
+	 */
+	unsigned int vm_lock_seq;
+#endif
+	unsigned int __vm_anon_pgoff_lo; /* 匿名页偏移的低 32 位，见 vma_start_anon_pgoff() */
+	/*
+	 * 链到 anon_vma。mmap_lock 和 page_table_lock 一起序列化。
+	 */
+	struct list_head anon_vma_chain;
+	/*
+	 * 匿名页反向映射的根。文件私有映射在 COW 之后也会有。
+	 * MAP_SHARED 文件映射只有 i_mmap，没有 anon_vma。
+	 * page_table_lock 序列化。
+	 */
+	struct anon_vma *anon_vma;
+
+	/*
+	 * fault / huge_fault / map_pages。匿名映射可以是 NULL。
+	 */
+	const struct vm_operations_struct *vm_ops;
+
+	unsigned long vm_pgoff;		/* 相对 vm_file 的页偏移 */
+	struct file * vm_file;			/* 映射的文件，匿名为 NULL */
+	void * vm_private_data;			/* 驱动私有，以前叫 vm_pte */
+
+#ifdef CONFIG_SWAP
+	atomic_long_t swap_readahead_info;	/* swap 预读游标 */
+#endif
+#ifndef CONFIG_MMU
+	struct vm_region *vm_region;		/* NOMMU 的区域 */
+#endif
+#ifdef CONFIG_NUMA
+	struct mempolicy *vm_policy;		/* 这个 VMA 的 NUMA 策略 */
+#endif
+#ifdef CONFIG_NUMA_BALANCING
+	struct vma_numab_state *numab_state;	/* NUMA balancing 状态 */
+#endif
+#ifdef CONFIG_PER_VMA_LOCK
+	/*
+	 * 0：已脱离，读者不能再加。
+	 * 1：挂着且没上读锁（或写锁）。
+	 * 大于 1：读者数量。
+	 * VM_REFCNT_EXCLUDE_READERS_FLAG 及以上：正在踢读者，禁止新读者进入。
+	 * RCU 读者可以读这个字段。完整状态机在源码注释 :1007-1044。
+	 */
+	refcount_t vm_refcnt ____cacheline_aligned_in_smp;
+#ifdef CONFIG_DEBUG_LOCK_ALLOC
+	struct lockdep_map vmlock_dep_map;	/* lockdep */
+#endif
+#endif
+#ifdef CONFIG_64BIT
+	unsigned int __vm_anon_pgoff_hi;	/* 匿名页偏移的高 32 位 */
+#endif
+	/*
+	 * 文件映射进 address_space->i_mmap 的挂钩。
+	 */
+	struct {
+		struct rb_node rb;		/* 链进 i_mmap 区间树 */
+		unsigned long rb_subtree_last;	/* 区间树子树的最大结尾 */
+	} shared;
+#ifdef CONFIG_ANON_VMA_NAME
+	/*
+	 * [anon:name]。mmap_lock 序列化，用 anon_vma_name() 读。
+	 */
+	struct anon_vma_name *anon_name;
+#endif
+	struct vm_userfaultfd_ctx vm_userfaultfd_ctx; /* userfaultfd 上下文，没注册时是空 */
+#ifdef __HAVE_PFNMAP_TRACKING
+	struct pfnmap_track_ctx *pfnmap_track_ctx; /* PFN map 跟踪 */
+#endif
+} __randomize_layout;
+```
 
 `shared` 这个匿名结构是文件映射进 `i_mmap` 的挂钩。匿名 VMA 的 `vm_file` 为 NULL，一般不进这棵树。
 
@@ -286,10 +491,12 @@ pmd = pmd_alloc(mm, pud, address)      # :6656
 
 每个被检查的 `struct page` 在 page_ext 里挂一份 `struct page_table_check`（`:16`）：
 
-| 成员 | 中文 |
-|---|---|
-| `atomic_t anon_map_count` | 作为匿名页被映射的次数 |
-| `atomic_t file_map_count` | 作为文件页被映射的次数 |
+```c
+struct page_table_check {
+	atomic_t anon_map_count;	/* 作为匿名页被映射的次数 */
+	atomic_t file_map_count;	/* 作为文件页被映射的次数 */
+};
+```
 
 装 PTE 走 `__page_table_check_ptes_set`（`:210`），拆走 `__page_table_check_pte_clear`（`:148`）。PMD/PUD 有对应的 `_pmds_set` / `_puds_set`。它不代替 mapcount，只在打开时多一道断言。
 
@@ -301,33 +508,63 @@ pmd = pmd_alloc(mm, pud, address)      # :6656
 
 PCID 的说明在 `arch/x86/mm/tlb.c:65` 起。硬件字段叫 PCID，内核里的编号叫 ASID。PCID 0 留给不认识 PCID 的用户，所以写进 CR3 的 kPCID 是 ASID+1（`:83-85`）。开了 PTI 时用户页表再用一段 uPCID，等于 kPCID + 2048（`:87-90`）。`switch_mm_irqs_off`（`:783`）在 `loaded_mm` 没变、又不是从 lazy 回来时，可以不重写 CR3。
 
-`struct mmu_gather`（`include/asm-generic/tlb.h:325`）是 unmap 期间的暂存。成员：
+`struct mmu_gather`（`include/asm-generic/tlb.h:325`）是 unmap 期间的暂存。
 
-| 成员 | 条件 | 中文 |
-|---|---|---|
-| `struct mm_struct *mm` | 始终 | 哪套地址空间 |
-| `struct mmu_table_batch *batch` | `CONFIG_MMU_GATHER_TABLE_FREE` | 要延后释放的页表页 |
-| `unsigned long start` / `end` | 始终 | 这次要刷的虚拟区间 |
-| `unsigned int fullmm : 1` | 始终 | 正在拆整个 mm，可以整表刷 |
-| `unsigned int need_flush_all : 1` | 始终 | 必须全刷，不能只刷区间 |
-| `unsigned int freed_tables : 1` | 始终 | 拆掉了页表页，不只是 PTE |
-| `unsigned int delayed_rmap : 1` | 始终 | 还有推迟的 rmap 拆除 |
-| `unsigned int cleared_ptes : 1` | 始终 | 清过 PTE |
-| `unsigned int cleared_pmds : 1` | 始终 | 清过 PMD |
-| `unsigned int cleared_puds : 1` | 始终 | 清过 PUD |
-| `unsigned int cleared_p4ds : 1` | 始终 | 清过 P4D |
-| `unsigned int vma_exec : 1` | 始终 | 区间里有 `VM_EXEC`，I-TLB 也要刷 |
-| `unsigned int vma_huge : 1` | 始终 | 区间里有 hugetlb |
-| `unsigned int vma_pfn : 1` | 始终 | 区间里有 `VM_PFNMAP` / `VM_MIXEDMAP` |
-| `unsigned int unshared_tables : 1` | 始终 | 取消了 hugetlb PMD 共享 |
-| `unsigned int fully_unshared_tables : 1` | 始终 | 共享表已经变成某一边独占，新主人可能改它 |
-| `unsigned int batch_count` | 始终 | 已经挂了多少个 batch |
-| `struct mmu_gather_batch *active` | 没有 `CONFIG_MMU_GATHER_NO_GATHER` | 当前正在填的 batch |
-| `struct mmu_gather_batch local` | 同上 | 栈上的第一批，分配失败时也能收几页 |
-| `struct page *__pages[MMU_GATHER_BUNDLE]` | 同上 | `local` 的内联页数组，`MMU_GATHER_BUNDLE` 是 8（`:274`） |
-| `unsigned int page_size` | 同上且 `CONFIG_MMU_GATHER_PAGE_SIZE` | 这一批页的尺寸。换尺寸要先刷 |
+```c
+struct mmu_gather {
+	struct mm_struct	*mm;		/* 哪套地址空间 */
 
-`struct mmu_gather_batch`（`:276`）：`next`、`nr`（已填个数）、`max`、柔性数组 `struct encoded_page *encoded_pages[]`。单批上限 `MAX_GATHER_BATCH`（`:283`）是一页减去 batch 头、再除以指针大小。批次数上限 `MAX_GATHER_BATCH_COUNT`（`:292`）大约是 10000 页，避免不可抢占内核在一次 unmap 里软锁死。
+#ifdef CONFIG_MMU_GATHER_TABLE_FREE
+	struct mmu_table_batch	*batch;		/* 要延后释放的页表页 */
+#endif
+
+	unsigned long		start;		/* 这次要刷的虚拟区间起点 */
+	unsigned long		end;		/* 这次要刷的虚拟区间终点 */
+	unsigned int		fullmm : 1;	/* 正在拆整个 mm，可以整表刷 */
+	unsigned int		need_flush_all : 1; /* 必须全刷，不能只刷区间 */
+	unsigned int		freed_tables : 1; /* 拆掉了页表页，不只是 PTE */
+	unsigned int		delayed_rmap : 1; /* 还有推迟的 rmap 拆除 */
+	unsigned int		cleared_ptes : 1; /* 清过 PTE */
+	unsigned int		cleared_pmds : 1; /* 清过 PMD */
+	unsigned int		cleared_puds : 1; /* 清过 PUD */
+	unsigned int		cleared_p4ds : 1; /* 清过 P4D */
+	unsigned int		vma_exec : 1;	/* 区间里有 VM_EXEC，I-TLB 也要刷 */
+	unsigned int		vma_huge : 1;	/* 区间里有 hugetlb */
+	unsigned int		vma_pfn  : 1;	/* 区间里有 VM_PFNMAP / VM_MIXEDMAP */
+	/*
+	 * 取消了 hugetlb PMD 共享。
+	 */
+	unsigned int		unshared_tables : 1;
+	/*
+	 * 共享表已经变成某一边独占，新主人可能改它。
+	 */
+	unsigned int		fully_unshared_tables : 1;
+
+	unsigned int		batch_count;	/* 已经挂了多少个 batch */
+
+#ifndef CONFIG_MMU_GATHER_NO_GATHER
+	struct mmu_gather_batch *active;	/* 当前正在填的 batch */
+	struct mmu_gather_batch	local;		/* 栈上的第一批，分配失败时也能收几页 */
+	struct page		*__pages[MMU_GATHER_BUNDLE]; /* local 的内联页数组，8 个 */
+#ifdef CONFIG_MMU_GATHER_PAGE_SIZE
+	unsigned int		page_size;	/* 这一批页的尺寸，换尺寸要先刷 */
+#endif
+#endif
+};
+```
+
+`struct mmu_gather_batch`（`:276`）：
+
+```c
+struct mmu_gather_batch {
+	struct mmu_gather_batch	*next;
+	unsigned int		nr;		/* 已填个数 */
+	unsigned int		max;
+	struct encoded_page	*encoded_pages[]; /* 柔性数组 */
+};
+```
+
+单批上限 `MAX_GATHER_BATCH`（`:283`）是一页减去 batch 头、再除以指针大小。批次数上限 `MAX_GATHER_BATCH_COUNT`（`:292`）大约是 10000 页，避免不可抢占内核在一次 unmap 里软锁死。
 
 ```text
 tlb_gather_mmu(tlb, mm)                 # mmu_gather.c:462
@@ -355,7 +592,23 @@ mm 用了 global ASID：broadcast_tlb_flush
 
 `INVLPGB`（`X86_FEATURE_INVLPGB`）存在时，`flush_tlb_all`（`:1448`）可以不发 IPI，走 `invlpgb_flush_all`。没有这个特性就 `on_each_cpu`。
 
-回收路径上还有另一套批量，不要和 `mmu_gather` 混。`try_to_unmap_flush`（`mm/rmap.c:715`）刷的是 `current->tlb_ubc`，类型是 `struct tlbflush_unmap_batch`（`mm_types_task.h:68`）。只在 `CONFIG_ARCH_WANT_BATCHED_UNMAP_TLB_FLUSH` 下有成员：`arch`（架构的待刷集合）、`flush_required`、`writable`（拆的时候 PTE 是脏的，写 IO 之前必须刷掉，否则旧 TLB 还能把页写脏）。`try_to_unmap_flush_dirty`（`:728`）只在 `writable` 时才刷。
+回收路径上还有另一套批量，不要和 `mmu_gather` 混。`try_to_unmap_flush`（`mm/rmap.c:715`）刷的是 `current->tlb_ubc`，类型是 `struct tlbflush_unmap_batch`（`mm_types_task.h:68`）。只在 `CONFIG_ARCH_WANT_BATCHED_UNMAP_TLB_FLUSH` 下有成员：
+
+```c
+struct tlbflush_unmap_batch {
+#ifdef CONFIG_ARCH_WANT_BATCHED_UNMAP_TLB_FLUSH
+	struct arch_tlbflush_unmap_batch arch;	/* 架构的待刷集合 */
+	bool flush_required;			/* 有待刷的项 */
+	/*
+	 * 拆的时候 PTE 是脏的。写 IO 之前必须刷掉，
+	 * 否则旧 TLB 还能把页写脏。
+	 */
+	bool writable;
+#endif
+};
+```
+
+`try_to_unmap_flush_dirty`（`:728`）只在 `writable` 时才刷。
 
 ---
 
@@ -409,26 +662,59 @@ static __always_inline void enter_lazy_tlb(struct mm_struct *mm, struct task_str
 
 `struct anon_vma`（`include/linux/rmap.h:32`）：
 
-| 成员 | 中文 |
-|---|---|
-| `struct anon_vma *root` | 这棵树的根。锁加在根的 `rwsem` 上 |
-| `struct rw_semaphore rwsem` | 写：改树。读：`rmap_walk` 扫 |
-| `atomic_t refcount` | 没有「页表一定还在」的保证时拿的引用。最后一个放下的人负责释放 |
-| `unsigned long num_children` | 把 `parent` 指过来的 anon_vma 个数，含自己。`anon_vma_clone` 用它决定复用还是新建 |
-| `unsigned long num_active_vmas` | `->anon_vma` 指着这个对象的 VMA 个数 |
-| `struct anon_vma *parent` | 父。fork 出来的子 anon_vma 指回父，这样父的页还能找到子进程的 VMA |
-| `struct rb_root_cached rb_root` | 相关 VMA 的区间树。`rb_node` 的最低位会被 `mm_take_all_locks` 占用，读之前必须先拿 `rwsem`（注释 `:58-63`） |
+```c
+struct anon_vma {
+	struct anon_vma *root;		/* 这棵树的根，锁加在根的 rwsem 上 */
+	struct rw_semaphore rwsem;	/* 写：改树；读：rmap_walk 扫 */
+	/*
+	 * 没有「页表一定还在」的保证时拿的引用。
+	 * 最后一个放下的人负责释放。
+	 */
+	atomic_t refcount;
+
+	/*
+	 * 把 parent 指过来的 anon_vma 个数，含自己。
+	 * anon_vma_clone 用它决定复用还是新建。
+	 */
+	unsigned long num_children;
+	unsigned long num_active_vmas;	/* ->anon_vma 指着这个对象的 VMA 个数 */
+
+	/*
+	 * 父。fork 出来的子 anon_vma 指回父，
+	 * 这样父的页还能找到子进程的 VMA。
+	 */
+	struct anon_vma *parent;
+
+	/*
+	 * 相关 VMA 的区间树。rb_node 的最低位会被 mm_take_all_locks 占用，
+	 * 读之前必须先拿 rwsem。
+	 */
+	struct rb_root_cached rb_root;
+};
+```
 
 `struct anon_vma_chain`（`:83`）是 VMA 和 anon_vma 之间的边：
 
-| 成员 | 条件 | 中文 |
-|---|---|---|
-| `struct vm_area_struct *vma` | 始终 | 这一边的 VMA |
-| `struct anon_vma *anon_vma` | 始终 | 这一边的 anon_vma |
-| `struct list_head same_vma` | 始终 | 同一个 VMA 上的全部 anon_vma。锁是 `mmap_lock` 加 `page_table_lock` |
-| `struct rb_node rb` | 始终 | 挂进 `anon_vma->rb_root`。锁是 `anon_vma->rwsem` |
-| `unsigned long rb_subtree_last` | 始终 | 区间树子树的最大结尾 |
-| `unsigned long cached_vma_start` / `cached_vma_last` | `CONFIG_DEBUG_VM_RB` | 调试用的区间缓存 |
+```c
+struct anon_vma_chain {
+	struct vm_area_struct *vma;	/* 这一边的 VMA */
+	struct anon_vma *anon_vma;	/* 这一边的 anon_vma */
+	/*
+	 * 同一个 VMA 上的全部 anon_vma。
+	 * 锁是 mmap_lock 加 page_table_lock。
+	 */
+	struct list_head same_vma;
+	/*
+	 * 挂进 anon_vma->rb_root。锁是 anon_vma->rwsem。
+	 */
+	struct rb_node rb;
+	unsigned long rb_subtree_last;	/* 区间树子树的最大结尾 */
+#ifdef CONFIG_DEBUG_VM_RB
+	unsigned long cached_vma_start;	/* 调试用的区间起点 */
+	unsigned long cached_vma_last;	/* 调试用的区间终点 */
+#endif
+};
+```
 
 VMA 上的 `anon_vma_chain` 链表头和 `anon_vma` 指针在 [6.2](#62-struct-vm_area_struct-全部成员923)。`MAP_SHARED` 的文件映射没有 anon_vma，只有 `i_mmap`。私有文件映射在 COW 之后会有。
 
@@ -462,15 +748,25 @@ void rmap_walk(struct folio *folio, struct rmap_walk_control *rwc) /* rmap.c:315
 
 `struct rmap_walk_control`（`rmap.h:953`）：
 
-| 成员 | 中文 |
-|---|---|
-| `void *arg` | 交给 `rmap_one` 的私有指针 |
-| `bool try_lock` | 拿不到 anon_vma 锁就放弃，而不是睡 |
-| `bool contended` | 上面那次 trylock 失败过 |
-| `bool (*rmap_one)(folio, vma, addr, arg)` | 对一个 VMA 里的一条映射做事。返回 false 就停 |
-| `int (*done)(folio)` | 可选。返回真就不再往下扫 |
-| `struct anon_vma *(*anon_lock)(folio, rwc)` | 匿名页怎么锁。常用 `folio_lock_anon_vma_read`（`rmap.c:637`） |
-| `bool (*invalid_vma)(vma, arg)` | 这个 VMA 不算数，跳过 |
+```c
+struct rmap_walk_control {
+	void *arg;			/* 交给 rmap_one 的私有指针 */
+	bool try_lock;			/* 拿不到 anon_vma 锁就放弃，而不是睡 */
+	bool contended;			/* 上面那次 trylock 失败过 */
+	/*
+	 * 对一个 VMA 里的一条映射做事。返回 false 就停。
+	 */
+	bool (*rmap_one)(struct folio *folio, struct vm_area_struct *vma,
+					unsigned long addr, void *arg);
+	int (*done)(struct folio *folio); /* 可选，返回真就不再往下扫 */
+	/*
+	 * 匿名页怎么锁。常用 folio_lock_anon_vma_read（rmap.c:637）。
+	 */
+	struct anon_vma *(*anon_lock)(const struct folio *folio,
+				      struct rmap_walk_control *rwc);
+	bool (*invalid_vma)(struct vm_area_struct *vma, void *arg); /* 这个 VMA 不算数，跳过 */
+};
+```
 
 `folio_referenced`（`rmap.c:1072`）是回收用的：`rmap_one = folio_referenced_one`，`try_lock = true`。返回值是还被访问着的映射数。mapcount 已经是 0，或者没有 mapping，直接返回 0。
 
