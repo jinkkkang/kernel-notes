@@ -2,7 +2,7 @@
 
 **结论**：策略回答「这次页从哪个 node 来」。进程有一份，VMA 可以另有一份。VMA 上的优先。中断不看当前进程的策略（`include/linux/mempolicy.h:30`）。用户态入口是 `set_mempolicy`、`mbind`、`migrate_pages`，numactl 是它们的命令行壳。
 
-> 导航：[上一篇 高阶](./07-high-order-and-compaction.md) · [本目录](./README.md) · [下一篇 CMA](./09-cma.md)
+> 导航：[上一篇 高阶](./03-07-high-order-and-compaction.md) · [本目录](./03-00-page-alloc.md) · [下一篇 CMA](./03-09-cma.md)
 
 ---
 
@@ -63,7 +63,7 @@ mbind(start, len, mode, nmask, maxnode, flags)  # SYSCALL_DEFINE6 :1830
 
 numactl 常见对应：`numactl --membind` → `MPOL_BIND`，`--interleave` → `MPOL_INTERLEAVE`，`--preferred` → `MPOL_PREFERRED`，`--localalloc` → `MPOL_LOCAL`。`--physcpubind` 是 CPU 亲和，不进 `struct mempolicy`。
 
-VMA 上的指针是 `vm_policy`（[06](../06-mm-and-vma.md)）。缺页分配匿名页时走这份策略。迁移本身见 [10-reclaim/10](../10-reclaim/10-migration.md) 的 `migrate_pages`。
+VMA 上的指针是 `vm_policy`（[06](./06-mm-and-vma.md)）。缺页分配匿名页时走这份策略。迁移本身见 [10-10-migration.md](./10-10-migration.md) 的 `migrate_pages`。
 
 ---
 
@@ -97,4 +97,4 @@ VMA 上的指针是 `vm_policy`（[06](../06-mm-and-vma.md)）。缺页分配匿
 
 ---
 
-[上一篇 高阶](./07-high-order-and-compaction.md) · [本目录](./README.md) · [下一篇 CMA](./09-cma.md)
+[上一篇 高阶](./03-07-high-order-and-compaction.md) · [本目录](./03-00-page-alloc.md) · [下一篇 CMA](./03-09-cma.md)

@@ -2,10 +2,10 @@
 
 **结论**：经典 LRU 把可回收 folio 放在五条链表上：inactive/active 各分匿名和文件，再加上 unevictable。新页先进 per-CPU 的 `folio_batch`，批量刷进 inactive 的头部。访问打 `PG_referenced`，第二次再升到 active。回收从 inactive 尾部摘，active 太「满」时先把冷页降下来。匿名和文件扫多少，由 swappiness 和 `lru_cost` 一起定。换出去的页在 radix tree 里留一个 shadow，再缺页时用 refault 距离决定要不要直接拉回 active。
 
-MGLRU 打开时，下面「访问时」和「入链时」有一部分函数会提前返回，改走 [05](./05-mglru-code-path.md)。本节写的是 `lru_gen_enabled()` 为假时的行为。两套并排见 [06](./06-lru-vs-mglru.md)。
+MGLRU 打开时，下面「访问时」和「入链时」有一部分函数会提前返回，改走 [05](./10-05-mglru-code-path.md)。本节写的是 `lru_gen_enabled()` 为假时的行为。两套并排见 [06](./10-06-lru-vs-mglru.md)。
 
 > `struct lruvec` 在 `include/linux/mmzone.h:766`。入链在 `mm/folio.c`。扫描在 `mm/vmscan.c`。refault 在 `mm/workingset.c`。
-> 导航：[上一篇 总入口](./01-overview.md) · [本目录](./README.md) · [下一篇 经典 LRU 的问题](./03-lru-problems.md)
+> 导航：[上一篇 总入口](./10-01-overview.md) · [本目录](./10-00-reclaim.md) · [下一篇 经典 LRU 的问题](./10-03-lru-problems.md)
 
 ---
 
@@ -22,8 +22,8 @@ MGLRU 打开时，下面「访问时」和「入链时」有一部分函数会�
 | `atomic_long_t nonresident_age` | 始终 | 不在内存中的「年龄」，由 LRU 移动推动。workingset 用它给 shadow 盖时间戳 |
 | `unsigned long refaults[ANON_AND_FILE]` | 始终 | 上一轮回收时看到的 refault 计数。和当前 `WORKINGSET_ACTIVATE_*` 比较，变了就说明有新工作集在建立 |
 | `unsigned long flags` | 始终 | `enum lruvec_flags`（`:424`）：`LRUVEC_CGROUP_CONGESTED`、`LRUVEC_NODE_CONGESTED`。脏页背后的 BDI 拥塞。kswapd 可以解开 cgroup 设的拥塞，cgroup 回收解不开 kswapd 设的 |
-| `struct lru_gen_folio lrugen` | `CONFIG_LRU_GEN` | 分代链表。全成员在 [04](./04-mglru-design.md) |
-| `struct lru_gen_mm_state mm_state` | `CONFIG_LRU_GEN` 且 `CONFIG_LRU_GEN_WALKS_MMU` | 并发走 mm 链表的 Bloom filter 状态。全成员在 [04](./04-mglru-design.md) |
+| `struct lru_gen_folio lrugen` | `CONFIG_LRU_GEN` | 分代链表。全成员在 [04](./10-04-mglru-design.md) |
+| `struct lru_gen_mm_state mm_state` | `CONFIG_LRU_GEN` 且 `CONFIG_LRU_GEN_WALKS_MMU` | 并发走 mm 链表的 Bloom filter 状态。全成员在 [04](./10-04-mglru-design.md) |
 | `struct pglist_data *pgdat` | `CONFIG_MEMCG` | 回指 node |
 | `struct zswap_lruvec_state zswap_lruvec_state` | 始终 | 这个 lruvec 的 zswap 状态。编了 `CONFIG_ZSWAP` 时只有一个成员 `atomic_long_t nr_disk_swapins`（`include/linux/zswap.h:14`）：从磁盘换入、zswap 池里没有的页数，shrinker 用它惩罚以前缩得太狠。没编 zswap 时这个结构是空的（`:40`） |
 
@@ -96,7 +96,7 @@ batch 满了，或 folio 不适合缓存，或 LRU 缓存被关掉：
 
 新匿名页、新文件页默认进 **inactive 的头**。头是「刚来的」，尾是「最久没被提到前面的」。回收从尾部摘。
 
-`folio_add_lru_vma`（`folio.c:501`）：VMA 带 `VM_LOCKED` 且不带 `VM_SPECIAL` 时走 `mlock_new_folio`，进 unevictable，见 [09](./09-mlock-unevictable.md)。否则和 `folio_add_lru` 一样。
+`folio_add_lru_vma`（`folio.c:501`）：VMA 带 `VM_LOCKED` 且不带 `VM_SPECIAL` 时走 `mlock_new_folio`，进 unevictable，见 [09](./10-09-mlock-unevictable.md)。否则和 `folio_add_lru` 一样。
 
 ---
 
@@ -110,7 +110,7 @@ batch 满了，或 folio 不适合缓存，或 LRU 缓存被关掉：
 | inactive，referenced | active，未 referenced |
 | active，未 referenced | active，referenced |
 
-`PG_dropbehind` 的 folio 直接返回，不记访问。MGLRU 打开时这里不走上面三行，改调 `lru_gen_inc_refs`（`:355`），见 [05](./05-mglru-code-path.md)。
+`PG_dropbehind` 的 folio 直接返回，不记访问。MGLRU 打开时这里不走上面三行，改调 `lru_gen_inc_refs`（`:355`），见 [05](./10-05-mglru-code-path.md)。
 
 经典路径（`:432-453`）：
 
@@ -277,7 +277,7 @@ workingset_test_recent(shadow, ...)
 | `shrink_folio_list` | `:1058` | 释放 / 写出 / 放回 / 降级 |
 | `folio_check_references` | `:868` | young 位和 `PG_referenced` 决定 ACTIVATE/KEEP/RECLAIM |
 | `pageout` | `:621` | 回收上下文把脏匿名页写出去 |
-| `demote_folio_list` | `:997` | 降到更慢的节点。迁移细节在 [10](./10-migration.md) |
+| `demote_folio_list` | `:997` | 降到更慢的节点。迁移细节在 [10](./10-10-migration.md) |
 | `workingset_age_nonresident` | `mm/workingset.c:366` | 推动 nonresident 年龄 |
 | `workingset_refault` | `workingset.c:548` | 按 shadow 距离决定激活 |
 | `workingset_activation` | `workingset.c:597` | 激活时的记账 |
@@ -285,4 +285,4 @@ workingset_test_recent(shadow, ...)
 
 ---
 
-[上一篇 总入口](./01-overview.md) · [本目录](./README.md) · [下一篇 经典 LRU 的问题](./03-lru-problems.md)
+[上一篇 总入口](./10-01-overview.md) · [本目录](./10-00-reclaim.md) · [下一篇 经典 LRU 的问题](./10-03-lru-problems.md)

@@ -3,7 +3,7 @@
 **结论**：水位低于 LOW，分配路径叫醒 kswapd，kswapd 在后台把 zone 拉回 HIGH。分配慢路径自己进 `try_to_free_pages`，延迟算在那个任务头上。两边都进 `shrink_node`。全局回收且 MGLRU 开着，走 `lru_gen_shrink_node`；否则走 `shrink_node_memcgs`，里面按 memcg 扫经典 LRU，并在每个 memcg 上调 `shrink_slab`。
 
 > 主文件：`mm/vmscan.c`。`struct scan_control` 在 `:76`。
-> 导航：[本目录](./README.md) · [下一篇 经典 LRU](./02-lru-classic.md)
+> 导航：[上一篇 回收](./10-00-reclaim.md) · [本目录](./10-00-reclaim.md) · [下一篇 经典 LRU](./10-02-lru-classic.md)
 
 ---
 
@@ -27,7 +27,7 @@
 
 `kswapd` 把自己标成 `PF_MEMALLOC | PF_KSWAPD`（`:7511`），这样它为了回收而做的小分配不会再递归进回收。它睡在 `pgdat->kswapd_wait` 上，目标是把 zone 拉回 HIGH。
 
-水位四档和 `wakeup_kswapd` 的分配侧在 [03-page-alloc/03](../03-page-alloc/03-fastpath-freelist.md)。慢路径怎么决定要不要直接回收，在 [03-page-alloc/06](../03-page-alloc/06-slowpath.md)。
+水位四档和 `wakeup_kswapd` 的分配侧在 [03-03-fastpath-freelist.md](./03-03-fastpath-freelist.md)。慢路径怎么决定要不要直接回收，在 [03-06-slowpath.md](./03-06-slowpath.md)。
 
 ---
 
@@ -44,11 +44,11 @@ shrink_node_memcgs(pgdat, sc);         /* :6160 */
 
 `root_reclaim`（`:222`，没编 memcg 时 `:256` 恒为真）是全局回收：没有指定目标 memcg，或者目标就是 root。memcg 自己超了 high/max 触发的回收不是 root，走 `shrink_node_memcgs`。那条循环里每个 lruvec 仍可能是 MGLRU 的：`shrink_lruvec` 对开着 MGLRU 的 lruvec 会进 `lru_gen_shrink_lruvec`（`:5208`）。cgroup 章讲的是「谁被 charge、限额是多少」；这里讲的是「限额到了以后，页从哪条链上摘」。
 
-`lru_gen_enabled()` 在 `include/linux/mm_inline.h`。编了 `CONFIG_LRU_GEN_ENABLED` 时用 `static_branch_likely`（`:107`），没编这个默认打开、但编了 `CONFIG_LRU_GEN` 时用 `static_branch_unlikely`（`:114`）。完全没编 `CONFIG_LRU_GEN` 时（`:315`）恒返回 false。运行中的开关是 `/sys/kernel/mm/lru_gen/enabled`，见 [06](./06-lru-vs-mglru.md)。
+`lru_gen_enabled()` 在 `include/linux/mm_inline.h`。编了 `CONFIG_LRU_GEN_ENABLED` 时用 `static_branch_likely`（`:107`），没编这个默认打开、但编了 `CONFIG_LRU_GEN` 时用 `static_branch_unlikely`（`:114`）。完全没编 `CONFIG_LRU_GEN` 时（`:315`）恒返回 false。运行中的开关是 `/sys/kernel/mm/lru_gen/enabled`，见 [06](./10-06-lru-vs-mglru.md)。
 
 `lru_gen_switching()`（`mm_inline.h:100`）是正在从一套 LRU 切到另一套的窗口。这段窗口里 `shrink_node` 先跑 MGLRU 的全局回收，再落回 `shrink_node_memcgs`，避免切换过程中有页两头不靠。
 
-经典路径的摘链、访问位、anon/file 比例在 [02](./02-lru-classic.md)。MGLRU 的驱逐在 [05](./05-mglru-code-path.md)。
+经典路径的摘链、访问位、anon/file 比例在 [02](./10-02-lru-classic.md)。MGLRU 的驱逐在 [05](./10-05-mglru-code-path.md)。
 
 ---
 
@@ -79,7 +79,7 @@ shrink_node_memcgs(pgdat, sc);         /* :6160 */
 | `unsigned int hibernation_mode:1` | 休眠路径上的回收 |
 | `unsigned int compaction_ready:1` | 某个 zone 已经有足够连续页，可以去 compact，不必再为高阶把缓存扫光 |
 | `unsigned int cache_trim_mode:1` | 当前 node 上有容易回收的冷文件页，先剪缓存、先别动匿名 |
-| `unsigned int file_is_tiny:1` | 当前 node 的文件 folio 少到危险。经典路径会转去扫匿名，见 [02](./02-lru-classic.md) 的 cache trap |
+| `unsigned int file_is_tiny:1` | 当前 node 的文件 folio 少到危险。经典路径会转去扫匿名，见 [02](./10-02-lru-classic.md) 的 cache trap |
 | `unsigned int no_demotion:1` | 只丢弃，不向更慢的内存层迁移 |
 | `s8 order` | 触发这次回收的分配阶 |
 | `s8 priority` | 扫描强度。每次扫 `total_size >> priority` 页。优先级从 12 往下掉，扫的比例翻倍 |
@@ -95,7 +95,7 @@ shrink_node_memcgs(pgdat, sc);         /* :6160 */
 | 成员 | 条件 | 中文 |
 |---|---|---|
 | `unsigned long reclaimed` | 始终 | LRU 回收之外放出的页。`flush_reclaim_state()`（`vmscan.c:289`）把它加进 `nr_reclaimed`。注释（`:292-296`）写明目前三类：slab 页、高端内存上从裁剪过的 inode 放下的干净文件页、XFS 放出的 buffer 页。这三类不能一律算进某一个 memcg，所以只在全局回收里计入 |
-| `struct lru_gen_mm_walk *mm_walk` | `CONFIG_LRU_GEN` | 这个线程正在做的页表遍历状态。MGLRU 老化用。成员在 [04](./04-mglru-design.md) |
+| `struct lru_gen_mm_walk *mm_walk` | `CONFIG_LRU_GEN` | 这个线程正在做的页表遍历状态。MGLRU 老化用。成员在 [04](./10-04-mglru-design.md) |
 
 `sc_swappiness`（`:203`）：主动回收且调用者给了 `proactive_swappiness` 时用那份，否则 `mem_cgroup_swappiness(memcg)`。全局默认 `vm_swappiness` 是 60（`:201`）。
 
@@ -116,9 +116,9 @@ mem_cgroup_iter
   部分遍历且已经够数：mem_cgroup_iter_break
 ```
 
-`shrink_lruvec` 里经典路径调用 `get_scan_count`、`shrink_active_list`、`shrink_inactive_list`、`shrink_folio_list`，见 [02](./02-lru-classic.md)。
+`shrink_lruvec` 里经典路径调用 `get_scan_count`、`shrink_active_list`、`shrink_inactive_list`、`shrink_folio_list`，见 [02](./10-02-lru-classic.md)。
 
-`shrink_slab`（`mm/shrinker.c:626`）是 slab 回收的入口：按 gfp、node、memcg、priority 去调各个 shrinker 的 `count_objects` / `scan_objects`。dentry、inode、自定义驱动的缓存都挂在这里。对象怎么从 slab 上摘下来是 shrinker 自己的事，本篇停在这个调用点。debugfs 怎么看某个 shrinker，见 [13](../13-observability.md) 的 shrinker debugfs 一节。`flush_reclaim_state` 把 shrinker 放出的页补进 `sc->nr_reclaimed`，否则 `shrink_node` 会以为这一轮白扫。
+`shrink_slab`（`mm/shrinker.c:626`）是 slab 回收的入口：按 gfp、node、memcg、priority 去调各个 shrinker 的 `count_objects` / `scan_objects`。dentry、inode、自定义驱动的缓存都挂在这里。对象怎么从 slab 上摘下来是 shrinker 自己的事，本篇停在这个调用点。debugfs 怎么看某个 shrinker，见 [13](./13-observability.md) 的 shrinker debugfs 一节。`flush_reclaim_state` 把 shrinker 放出的页补进 `sc->nr_reclaimed`，否则 `shrink_node` 会以为这一轮白扫。
 
 ---
 
@@ -128,7 +128,7 @@ mem_cgroup_iter
 |---|---|
 | `memory.current` 怎么涨的 | charge：`try_charge_memcg`，cgroup 章第 6 节 |
 | 超过 high 但还没 OOM | memcg 回收 + high 节流，仍是 charge 路径发起，页的摘除在本章 `shrink_node` |
-| `memory.stat` 的 anon/file/slab | 统计面。读法在 [13](../13-observability.md)，字段定义以 `Documentation/admin-guide/cgroup-v2.rst` 为准 |
+| `memory.stat` 的 anon/file/slab | 统计面。读法在 [13](./13-observability.md)，字段定义以 `Documentation/admin-guide/cgroup-v2.rst` 为准 |
 | 全局 kswapd 很忙但某个容器 current 不高 | 全局回收。`pgscan_kswapd` 涨、该 memcg 的 `memory.events` 不动 |
 
 本章不复制 `struct mem_cgroup` 成员表。cgroup 笔记里那张表是节选；要全成员直接看 `include/linux/memcontrol.h` 的定义。
@@ -152,7 +152,7 @@ mem_cgroup_iter
 | `wakeup_kswapd` | `mm/vmscan.c:7573` | 叫醒某 zone 的 kswapd |
 | `kswapd` | `:7492` | 每 node 的线程 |
 | `balance_pgdat` | `:7157` | 把水位做到 HIGH |
-| `kswapd_age_node` | `:6906` | `balance_pgdat` 里先老化。MGLRU 分支见 [05](./05-mglru-code-path.md) |
+| `kswapd_age_node` | `:6906` | `balance_pgdat` 里先老化。MGLRU 分支见 [05](./10-05-mglru-code-path.md) |
 | `kswapd_shrink_node` | `:7084` | kswapd 侧的 shrink |
 | `try_to_free_pages` | `:6769` | 直接回收入口 |
 | `do_try_to_free_pages` | `:6547` | 扫 zonelist 上的 node |
@@ -168,4 +168,4 @@ mem_cgroup_iter
 
 ---
 
-[本目录](./README.md) · [下一篇 经典双链表 LRU](./02-lru-classic.md)
+[上一篇 回收](./10-00-reclaim.md) · [本目录](./10-00-reclaim.md) · [下一篇 经典双链表 LRU](./10-02-lru-classic.md)

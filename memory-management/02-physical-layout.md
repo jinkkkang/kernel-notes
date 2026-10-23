@@ -3,7 +3,7 @@
 **结论**：每一页物理内存有一个 `struct page`；用户和页缓存看到的分配单位是 `folio`（可以是一页或多页）。页按 NUMA node（`pg_data_t`）再按 `zone` 分组。x86-64 默认用 sparsemem vmemmap：`mem_section` 指向 memmap，不是一整张平坦的 `mem_map[]`。
 
 > 定义：`include/linux/mm_types.h`、`include/linux/mmzone.h`。v7.3 `c03c1a14507d`。
-> 导航：[上一节 总览](./01-overview.md) · [目录](./README.md) · [下一节 页分配](./03-page-alloc/README.md)
+> 导航：[上一节 总览](./01-overview.md) · [目录](./README.md) · [下一节 页分配](./03-00-page-alloc.md)
 
 `memdesc_flags_t`（`mm_types.h:39`）只是包了一层 `unsigned long f`。v7.3 的 `page->flags` 不再是裸 `unsigned long`，nid / zone / section 从这层 flags 里拆（`memdesc_nid`、`memdesc_zonenum`、`memdesc_section`，见 `mm.h` / `mmzone.h`）。
 
@@ -474,7 +474,7 @@ static inline int folio_mapcount(const struct folio *folio)
 
 普通 folio 上，每条用户页表项算一次。hugetlb 上，一条「抽象的 hugetlb 页表项」算一次，哪怕它在硬件上拆成多条普通 PTE（注释 `:1938-1940`）。slab、页表页这些不能映射进用户空间的，mapcount 报 0。
 
-`_entire_mapcount` 是整块被一条 PMD/PUD 映射的次数，调试和拆大页用，不是 `folio_mapcount()` 的返回值。`mlock_count` 是 unevictable 槽上的锁页计数，和 mapcount 也不是一回事，见 [10-reclaim/09](./10-reclaim/09-mlock-unevictable.md)。
+`_entire_mapcount` 是整块被一条 PMD/PUD 映射的次数，调试和拆大页用，不是 `folio_mapcount()` 的返回值。`mlock_count` 是 unevictable 槽上的锁页计数，和 mapcount 也不是一回事，见 [10-09-mlock-unevictable.md](./10-09-mlock-unevictable.md)。
 
 拿到 folio 之后如果要改页表，还要页表锁。引用只保证这块 `struct page` 不会被释放，不保证 PTE 还指着它。
 
@@ -525,7 +525,7 @@ memblock_phys_alloc_range(size, align, start, end)   # memblock.c:1624
        成功返回物理地址，失败返回 0
 ```
 
-它标了 `__init`。buddy 起来之后再调，就是用一张已经废弃或只读的表。运行时要连续物理页，走 CMA / `alloc_contig_pages`，见 [03-page-alloc/09](./03-page-alloc/09-cma.md)。
+它标了 `__init`。buddy 起来之后再调，就是用一张已经废弃或只读的表。运行时要连续物理页，走 CMA / `alloc_contig_pages`，见 [03-09-cma.md](./03-09-cma.md)。
 
 ### KHO scratch
 
@@ -561,4 +561,4 @@ Kexec HandOver（`Documentation/admin-guide/mm/kho.rst`）要跨 kexec 保住一
 
 ---
 
-[上一节 总览](./01-overview.md) · [目录](./README.md) · [下一节 页分配](./03-page-alloc/README.md)
+[上一节 总览](./01-overview.md) · [目录](./README.md) · [下一节 页分配](./03-00-page-alloc.md)

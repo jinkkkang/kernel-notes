@@ -2,8 +2,8 @@
 
 **结论**：两套实现共用 `shrink_node`、`shrink_folio_list`、`workingset_refault` 的外壳。分叉在入链、记访问、选谁扫、以及 refault 时把页放回哪一代。开关在 `/sys/kernel/mm/lru_gen/enabled`，工作集阀在 `min_ttl_ms`。debugfs 的 `lru_gen` 能读直方图，也能手动老化和主动回收。
 
-> 接口以 `Documentation/admin-guide/mm/multigen_lru.rst` 为准。代码分叉见 [02](./02-lru-classic.md) 和 [05](./05-mglru-code-path.md)。
-> 导航：[上一篇 代码路径](./05-mglru-code-path.md) · [本目录](./README.md) · [下一篇 swap](./07-swap-zswap.md)
+> 接口以 `Documentation/admin-guide/mm/multigen_lru.rst` 为准。代码分叉见 [02](./10-02-lru-classic.md) 和 [05](./10-05-mglru-code-path.md)。
+> 导航：[上一篇 代码路径](./10-05-mglru-code-path.md) · [本目录](./10-00-reclaim.md) · [下一篇 swap](./10-07-swap-zswap.md)
 
 ---
 
@@ -46,7 +46,7 @@ flowchart TD
   lists --> sfl["shrink_folio_list"]
 ```
 
-切换窗口里全局回收先跑 MGLRU，再落回 `shrink_node_memcgs`。见 [01](./01-overview.md) 里 `shrink_node` 的代码。
+切换窗口里全局回收先跑 MGLRU，再落回 `shrink_node_memcgs`。见 [01](./10-01-overview.md) 里 `shrink_node` 的代码。
 
 ---
 
@@ -94,9 +94,9 @@ flowchart TD
 | 匿名还是文件 | `pgscan_anon` / `pgscan_file`，`pgsteal_anon` / `pgsteal_file` |
 | refault | `workingset_refault_*`、`workingset_activate_*`、`workingset_restore_*`。有这些数不等于 MGLRU 开着 |
 | kswapd 被 LOW 立刻叫醒 | `kswapd_low_wmark_hit_quickly` |
-| 本机这组数 | [01](./01-overview.md) 末尾，6.12 快照 |
+| 本机这组数 | [01](./10-01-overview.md) 末尾，6.12 快照 |
 
-tracepoint（`include/trace/events/vmscan.h`，[13](../13-observability.md) 有表）：
+tracepoint（`include/trace/events/vmscan.h`，[13](./13-observability.md) 有表）：
 
 | 事件 | 行 | 更贴哪套 |
 |---|---|---|
@@ -120,11 +120,11 @@ MGLRU 额外看 debugfs 直方图：每一代的 `age_in_ms` 和匿名/文件页
 - **RECIPE：想用 MGLRU。** 内核要编 `CONFIG_LRU_GEN`。文档的 Quick start 是再编 `CONFIG_LRU_GEN_ENABLED=y`，启动即开。运行时 `echo y > /sys/kernel/mm/lru_gen/enabled`。文档写：除非某个组件有没预料到的副作用，否则位都该开着。
 - **RECIPE：连续映射的热页多，又在意 `mmap_lock`。** 文档说 `0x0002` 理论上可能加重这把锁的竞争。要验证就清掉这一位（例如写 `0x0005`），并接受文档说的轻微损失。本篇不把「理论上」写成已经发生。
 - **RECIPE：桌面或笔记本，没有 oomd，UI 会因为回收卡。** 文档把 `min_ttl_ms` 做成压力阀。`echo 1000 > min_ttl_ms` 是文档给的通常值；`3000` 更稳，可能过早 OOM。默认 0 是关掉。这会在保不住工作集时杀进程，不是只把回收变温和。
-- **RECIPE：要关主开关。** 把 bit 0 清掉，或写 `n`。正在切换的窗口里 `shrink_node` 两条都会走，见 [01](./01-overview.md)。不要在切换过程中假设某一条计数立刻归零。
+- **RECIPE：要关主开关。** 把 bit 0 清掉，或写 `n`。正在切换的窗口里 `shrink_node` 两条都会走，见 [01](./10-01-overview.md)。不要在切换过程中假设某一条计数立刻归零。
 - **RECIPE：数据中心要估计工作集或提前腾冷页。** 用 debugfs 的 `+` / `-`，文档里的作业调度例子是：按间隔 `+` 出新一代，按冷页大小给机器排序；落地新作业前 `-` 掉冷代，腾不出来就换下一台。`min_gen_nr` 不要指到最年轻的两代。
 
 没有文档句子支持的「数据库一定要关」「容器一定要开」，这里不写。
 
 ---
 
-[上一篇 代码路径](./05-mglru-code-path.md) · [本目录](./README.md) · [下一篇 swap 与 zswap](./07-swap-zswap.md)
+[上一篇 代码路径](./10-05-mglru-code-path.md) · [本目录](./10-00-reclaim.md) · [下一篇 swap 与 zswap](./10-07-swap-zswap.md)

@@ -1,11 +1,11 @@
 # 10.3 经典 LRU 有什么问题
 
-**结论**：v7.3 的设计文档、管理文档、合入系列的提交说明、以及 `vmscan.c` 自己的注释，写了几件经典回收做起来贵、或者选页选不好的事。下面只列这些出处里实际写了的，每条指回 [02](./02-lru-classic.md) 里的函数。出处没写的，这里不写。
+**结论**：v7.3 的设计文档、管理文档、合入系列的提交说明、以及 `vmscan.c` 自己的注释，写了几件经典回收做起来贵、或者选页选不好的事。下面只列这些出处里实际写了的，每条指回 [02](./10-02-lru-classic.md) 里的函数。出处没写的，这里不写。
 
 > 设计文档：`Documentation/mm/multigen_lru.rst`。
 > 管理文档：`Documentation/admin-guide/mm/multigen_lru.rst`。
 > 合入系列说明：提交 `e1fd09e3d1dd`（Yu Zhao，2022-09-18，`mm: x86, arm64: add arch_has_hw_pte_young()`）。这是 "Multi-Gen LRU Framework" v14 的第一片，提交说明里带了整组补丁的 cover。groundwork 本体是 `ec1c86b25f4b`（同日，`mm: multi-gen LRU: groundwork`）。
-> 导航：[上一篇 经典 LRU](./02-lru-classic.md) · [本目录](./README.md) · [下一篇 MGLRU 设计](./04-mglru-design.md)
+> 导航：[上一篇 经典 LRU](./10-02-lru-classic.md) · [本目录](./10-00-reclaim.md) · [下一篇 MGLRU 设计](./10-04-mglru-design.md)
 
 ---
 
@@ -55,7 +55,7 @@ groundwork 提交说明（`ec1c86b25f4b`）把用词分开：hot/cold 留给 mul
 
 > Searching the rmap for PTEs mapping each page on an LRU list (to test and clear the accessed bit) can be expensive because pages from different VMAs (PA space) are not cache friendly to the rmap (VA space). For workloads mostly using mapped pages, searching the rmap can incur the highest CPU cost in the reclaim path.
 
-合入说明里第 07 片的一行摘要是 "Exploits spatial locality to improve efficiency when using the rmap."（`e1fd09e3d1dd` 的补丁列表）。实现是后来的 `lru_gen_look_around`，见 [05](./05-mglru-code-path.md)。
+合入说明里第 07 片的一行摘要是 "Exploits spatial locality to improve efficiency when using the rmap."（`e1fd09e3d1dd` 的补丁列表）。实现是后来的 `lru_gen_look_around`，见 [05](./10-05-mglru-code-path.md)。
 
 `vmscan.c` 自己也这么写。`shrink_active_list` 注释（`:2054-2056`）：folio 大多没映射时处理很快，可以持着 `lru_lock` 做完；映射着的话处理慢，慢在 `folio_referenced()`，所以先把 folio 从 LRU 摘下来再逐个查。
 
@@ -63,7 +63,7 @@ groundwork 提交说明（`ec1c86b25f4b`）把用词分开：hot/cold 留给 mul
 
 - `folio_referenced`（`mm/rmap.c:1072`）对一个 folio 做 `rmap_walk`，回调 `folio_referenced_one`（`:922`）。一次走一个 folio 的映射，不扫相邻 PTE。
 - `folio_check_references`（`vmscan.c:868`）和 `shrink_active_list`（`:2115`）都是在已经从链表上摘下的 folio 上调用它。
-- 设计文档说页表遍历能一次扫一片 young PTE，但地址空间太稀时不划算，所以两条都留着。MGLRU 的做法是 rmap 碰到年轻 PTE 时再看相邻项（look-around），扫得整齐就把 PMD 放进 Bloom filter，老化那边的页表遍历可以跳过或对准。见 [04](./04-mglru-design.md)。
+- 设计文档说页表遍历能一次扫一片 young PTE，但地址空间太稀时不划算，所以两条都留着。MGLRU 的做法是 rmap 碰到年轻 PTE 时再看相邻项（look-around），扫得整齐就把 PMD 放进 Bloom filter，老化那边的页表遍历可以跳过或对准。见 [04](./10-04-mglru-design.md)。
 
 ---
 
@@ -79,7 +79,7 @@ groundwork 提交说明（`ec1c86b25f4b`）把用词分开：hot/cold 留给 mul
 
 `get_scan_count`（`:2596-2622`）在接近 OOM（`priority == 0`）时放弃这套平衡，改成按大小对等扫。流式文件访问则靠 `cache_trim_mode` 先不换匿名页。这些是启发式上的特例，不是一个按 refault 百分比闭环的控制器。
 
-对应代码：`calculate_pressure_balance`（`:2444`）、`lruvec->cost[]` 的更新（`:2316-2360`）、`get_scan_count` 的 `SCAN_FRACT` / `SCAN_FILE` / `SCAN_ANON`。MGLRU 打开且不在切换时，`prepare_scan_control` 开头就返回（`:2287`），这套不跑。MGLRU 用 `get_type_to_scan` / `positive_ctrl_err`，见 [04](./04-mglru-design.md) 和 [05](./05-mglru-code-path.md)。
+对应代码：`calculate_pressure_balance`（`:2444`）、`lruvec->cost[]` 的更新（`:2316-2360`）、`get_scan_count` 的 `SCAN_FRACT` / `SCAN_FILE` / `SCAN_ANON`。MGLRU 打开且不在切换时，`prepare_scan_control` 开头就返回（`:2287`），这套不跑。MGLRU 用 `get_type_to_scan` / `positive_ctrl_err`，见 [04](./10-04-mglru-design.md) 和 [05](./10-05-mglru-code-path.md)。
 
 合入说明里的 "poor choices about what to evict" 没有点名 swappiness。把这条算进「选错」的依据是：设计文档用 PID 去平衡两类的 refault，经典代码自己写下了 cache trap 和「不是精确比较」。
 
@@ -95,7 +95,7 @@ groundwork 提交说明（`ec1c86b25f4b`）把用词分开：hot/cold 留给 mul
 
 这是经典隔离路径上的注释。MGLRU 的 `isolate_folios` 不走 `too_many_isolated`。不要把合入说明 "What's new" 第 2 条（`e1fd09e3d1dd` 里 long-tailed direct reclaim latency、old direct reclaim backoff）算到经典 LRU 头上：那段写的是 v14 相对这组补丁自己的旧退避，多换出了大约 `(total_mem>>DEF_PRIORITY)-nr_to_reclaim`。那是 MGLRU 补丁迭代，不是 `shrink_inactive_list` 的注释。
 
-管理文档把颠簸单独做成 `min_ttl_ms`（`Documentation/admin-guide/mm/multigen_lru.rst:65-82`）：个人机器对颠簸更敏感，因为 UI 会卡。写出 N 毫秒，就保护这么长的工作集，保不住就 OOM。`N=1000` 按文档的说法通常能去掉人能察觉的、由颠簸引起的卡顿；`N=3000` 更不明显，代价是可能过早 OOM。默认 0，关掉。这是 MGLRU 提供的阀，不是经典 LRU 里的一个参数。实现在 [05](./05-mglru-code-path.md) 的 `lru_gen_age_node`。
+管理文档把颠簸单独做成 `min_ttl_ms`（`Documentation/admin-guide/mm/multigen_lru.rst:65-82`）：个人机器对颠簸更敏感，因为 UI 会卡。写出 N 毫秒，就保护这么长的工作集，保不住就 OOM。`N=1000` 按文档的说法通常能去掉人能察觉的、由颠簸引起的卡顿；`N=3000` 更不明显，代价是可能过早 OOM。默认 0，关掉。这是 MGLRU 提供的阀，不是经典 LRU 里的一个参数。实现在 [05](./10-05-mglru-code-path.md) 的 `lru_gen_age_node`。
 
 ---
 
@@ -105,7 +105,7 @@ groundwork 提交说明（`ec1c86b25f4b`）把用词分开：hot/cold 留给 mul
 
 `mmzone.h:669-671` 重复了同一句：Memcg LRU 只用于全局回收；memcg 自己的回收仍走 `mem_cgroup_iter()`。
 
-对应代码：经典全局回收在 `shrink_node_memcgs`（`vmscan.c:6160`）里 `mem_cgroup_iter` 走子树。MGLRU 全局回收在 `lru_gen_shrink_node`（`:5229`）里，memcg 没关时走 `shrink_many`，用的是节点上的 memcg 代，结构在 [04](./04-mglru-design.md)。
+对应代码：经典全局回收在 `shrink_node_memcgs`（`vmscan.c:6160`）里 `mem_cgroup_iter` 走子树。MGLRU 全局回收在 `lru_gen_shrink_node`（`:5229`）里，memcg 没关时走 `shrink_many`，用的是节点上的 memcg 代，结构在 [04](./10-04-mglru-design.md)。
 
 ---
 
@@ -114,9 +114,9 @@ groundwork 提交说明（`ec1c86b25f4b`）把用词分开：hot/cold 留给 mul
 下面这些经常被口头归到「经典 LRU 的问题」里，但在指定的四处出处中没有对应句子，本篇不把它们列成问题：
 
 - 合入说明里 v14 相对旧 MGLRU 退避的长尾延迟（见第 5 条末尾）。
-- `inc_max_seq` 注释里的 cold/hot inversion（`vmscan.c:4035-4039`）。那是 MGLRU 在 `max_seq+1` 和 `min_seq[anon]` 重叠时的记账问题，写在 [05](./05-mglru-code-path.md)，不是经典双链表的行为。
-- 任何「某类业务应该关 MGLRU」的经验。开关的实践建议只复述管理文档，标 RECIPE，放在 [06](./06-lru-vs-mglru.md)。
+- `inc_max_seq` 注释里的 cold/hot inversion（`vmscan.c:4035-4039`）。那是 MGLRU 在 `max_seq+1` 和 `min_seq[anon]` 重叠时的记账问题，写在 [05](./10-05-mglru-code-path.md)，不是经典双链表的行为。
+- 任何「某类业务应该关 MGLRU」的经验。开关的实践建议只复述管理文档，标 RECIPE，放在 [06](./10-06-lru-vs-mglru.md)。
 
 ---
 
-[上一篇 经典 LRU](./02-lru-classic.md) · [本目录](./README.md) · [下一篇 MGLRU 设计](./04-mglru-design.md)
+[上一篇 经典 LRU](./10-02-lru-classic.md) · [本目录](./10-00-reclaim.md) · [下一篇 MGLRU 设计](./10-04-mglru-design.md)

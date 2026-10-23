@@ -3,7 +3,7 @@
 **结论**：新页在 `lruvec_add_folio` 里被 `lru_gen_add_folio` 放进某一代的链表头，代编号由 `PG_active` / `PG_workingset` / `PG_referenced` 决定。访问不搬链表：文件描述符走 `lru_gen_inc_refs`，缺页期间 `lru_gen_enter_fault` 把这次 fault 标成「带新近度」。老化只给 kswapd 做，`lru_gen_age_node` 决定要不要加 `max_seq`，真正扫页表的是 `try_to_inc_max_seq`。驱逐从最老的代拿页，`sort_folio` 把已经变年轻或该保护的页挪走，剩下的才进 `shrink_folio_list`。`min_ttl` 让最老一代还太年轻时直接 OOM，而不是把工作集赶走。
 
 > 入代在 `include/linux/mm_inline.h`。访问计数在 `mm/folio.c`。老化、驱逐在 `mm/vmscan.c`。
-> 导航：[上一篇 设计](./04-mglru-design.md) · [本目录](./README.md) · [下一篇 对照](./06-lru-vs-mglru.md)
+> 导航：[上一篇 设计](./10-04-mglru-design.md) · [本目录](./10-00-reclaim.md) · [下一篇 对照](./10-06-lru-vs-mglru.md)
 
 查不到的符号：`folio_inc_refs`。v7.3 没有这个函数。加引用次数的是 `lru_gen_inc_refs`（`mm/folio.c:355`）。升一代的是 `folio_inc_gen`（`mm/vmscan.c:3299`）。`mmzone.h:507` 和 `mm_inline.h:232` 的注释写的就是 `folio_inc_gen()`。
 
@@ -79,7 +79,7 @@ kswapd_age_node                         # vmscan.c:6906
   切换中：接着做经典的匿名 inactive 老化（inactive_is_low）
 ```
 
-`min_ttl` 来自 `lru_gen_min_ttl`（`:4207`，jiffies）。sysfs 的 `min_ttl_ms` 在 [06](./06-lru-vs-mglru.md)。注释（`:4229-4232`）写了两种「全都不可回收」：每一代都比 `min_ttl` 年轻，或者所有 memcg 太小 / 低于 min。两条都进同一个 `out_of_memory`。`trylock` 失败就跳过，不在 kswapd 里排队等 OOM 锁。
+`min_ttl` 来自 `lru_gen_min_ttl`（`:4207`，jiffies）。sysfs 的 `min_ttl_ms` 在 [06](./10-06-lru-vs-mglru.md)。注释（`:4229-4232`）写了两种「全都不可回收」：每一代都比 `min_ttl` 年轻，或者所有 memcg 太小 / 低于 min。两条都进同一个 `out_of_memory`。`trylock` 失败就跳过，不在 kswapd 里排队等 OOM 锁。
 
 `lru_gen_age_node` 自己不加 `max_seq`。加序号是驱逐驱动的：窗口里的代数接近下限时，驱逐路径调用 `try_to_inc_max_seq`（`:4070`）。
 
@@ -196,4 +196,4 @@ shrink_folio_list                           # 和经典路径同一个函数，�
 
 ---
 
-[上一篇 设计](./04-mglru-design.md) · [本目录](./README.md) · [下一篇 两套对照](./06-lru-vs-mglru.md)
+[上一篇 设计](./10-04-mglru-design.md) · [本目录](./10-00-reclaim.md) · [下一篇 两套对照](./10-06-lru-vs-mglru.md)

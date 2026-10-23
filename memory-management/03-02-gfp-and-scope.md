@@ -3,7 +3,7 @@
 **结论**：gfp 是调用者的愿望，scope 是这段上下文的硬约束。文件系统或块层拿着自己的锁时，分配不能再递归进文件系统或提交 IO。新代码用 `memalloc_nofs_save` / `memalloc_noio_save` 把约束记在 `current->flags` 上，让这段范围内的每一次分配自动降级。调用点继续写 `GFP_KERNEL`。在每个 `kmalloc` 上手工改成 `GFP_NOFS` 会漏，也会在锁已经放下之后仍然不敢进文件系统。
 
 > 位定义在 `include/linux/gfp_types.h`。组合宏在同文件后半。scope 在 `include/linux/sched/mm.h`，说明在 `Documentation/core-api/gfp_mask-from-fs-io.rst`。
-> 导航：[上一篇 总入口](./01-overview.md) · [本目录](./README.md) · [下一篇 快路径](./03-fastpath-freelist.md)
+> 导航：[上一篇 总入口](./03-01-overview.md) · [本目录](./03-00-page-alloc.md) · [下一篇 快路径](./03-03-fastpath-freelist.md)
 
 ---
 
@@ -114,4 +114,4 @@ gfp = current_gfp_context(gfp);
 
 ---
 
-[上一篇 总入口](./01-overview.md) · [本目录](./README.md) · [下一篇 快路径水位](./03-fastpath-freelist.md)
+[上一篇 总入口](./03-01-overview.md) · [本目录](./03-00-page-alloc.md) · [下一篇 快路径水位](./03-03-fastpath-freelist.md)
