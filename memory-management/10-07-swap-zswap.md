@@ -3,7 +3,7 @@
 **结论**：没有 swap 设备时，匿名页的回收只能丢掉 `MADV_FREE` / `LazyFree` 的页，或者什么都不做。有 swap 时，`shrink_folio_list` 把匿名 folio 写成 swap 项，PTE 变成 swap PTE，缺页走 `do_swap_page`。zswap 在写盘之前把页压进 zsmalloc 池，池满了才落到真正的 swap 设备。
 
 > 换出入口在 `mm/page_io.c`。压缩在 `mm/zswap.c`，对象池在 `mm/zsmalloc.c`。
-> 导航：[上一篇 对照](./06-lru-vs-mglru.md) · [本目录](./README.md) · [下一篇 OOM](./08-oom.md)
+> 导航：[上一篇 对照](./10-06-lru-vs-mglru.md) · [本目录](./10-00-reclaim.md) · [下一篇 OOM](./10-08-oom.md)
 
 ---
 
@@ -14,7 +14,7 @@
 
 本机 `SwapTotal` 0，`Zswap` 0，`Zswapped` 0。匿名活跃集约 1.8GB（`AnonPages`）是钉在内存里的。
 
-有 swap 时，`shrink_folio_list` 把匿名 folio 写成 swap 项，PTE 变成 swap PTE，缺页走 `do_swap_page`（`mm/memory.c:4881`）。写出的调用点在 [02](./02-lru-classic.md) 的 `pageout`。
+有 swap 时，`shrink_folio_list` 把匿名 folio 写成 swap 项，PTE 变成 swap PTE，缺页走 `do_swap_page`（`mm/memory.c:4881`）。写出的调用点在 [02](./10-02-lru-classic.md) 的 `pageout`。
 
 zswap（`mm/zswap.c`）在写 swap 设备之前把页压进 zsmalloc 池。换出入口在 `mm/page_io.c:238`：`zswap_store` 返回真就不再写盘。换入在 `page_io.c:480`：`zswap_load` 不是 `-ENOENT` 就不再读盘。
 
@@ -56,9 +56,9 @@ zs_malloc(pool, size, gfp, nid)           # zsmalloc.c:1397
 
 `struct zs_pool` / `struct size_class` 的成员表这里不列。定义在 `mm/zsmalloc.c`，字段随 fullness group 和 stat 变，本节只钉分配路径。handle 不是内核虚拟地址，映射时再 `kmap`。
 
-`swappiness` 是匿名和文件的扫描比例，不是「百分之多少内存拿去 swap」。经典路径怎么用它，见 [02](./02-lru-classic.md) 的 `get_scan_count`。MGLRU 下 `min_seq[anon]` 和 `min_seq[file]` 可以错开，上限是 `MAX_NR_GENS-MIN_NR_GENS-1` 代（`mmzone.h:557`），见 [04](./04-mglru-design.md)。
+`swappiness` 是匿名和文件的扫描比例，不是「百分之多少内存拿去 swap」。经典路径怎么用它，见 [02](./10-02-lru-classic.md) 的 `get_scan_count`。MGLRU 下 `min_seq[anon]` 和 `min_seq[file]` 可以错开，上限是 `MAX_NR_GENS-MIN_NR_GENS-1` 代（`mmzone.h:557`），见 [04](./10-04-mglru-design.md)。
 
-槽本身的布局在 [11](./11-swap-table.md)。
+槽本身的布局在 [11](./10-11-swap-table.md)。
 
 ---
 
@@ -75,4 +75,4 @@ zs_malloc(pool, size, gfp, nid)           # zsmalloc.c:1397
 
 ---
 
-[上一篇 对照](./06-lru-vs-mglru.md) · [本目录](./README.md) · [下一篇 OOM](./08-oom.md)
+[上一篇 对照](./10-06-lru-vs-mglru.md) · [本目录](./10-00-reclaim.md) · [下一篇 OOM](./10-08-oom.md)

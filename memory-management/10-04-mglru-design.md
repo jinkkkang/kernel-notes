@@ -3,7 +3,7 @@
 **结论**：MGLRU 把一个 lruvec 上的可回收 folio 分成多代。最年轻的代编号是 `max_seq`，匿名和文件共用，老化时加。最老的代是 `min_seq[]`，两类分开，回收时加。一代里面再按访问次数分档（tier），档的移动只改 `folio->flags` 上的原子位，不拿 LRU 锁。页表遍历负责发现年轻 PTE，rmap 上的 look-around 负责把热点 PMD 塞进 Bloom filter。PID 用 refault 比例决定保护哪一档、匿名和文件扫哪一类。memcg 代只服务全局回收。
 
 > 结构在 `include/linux/mmzone.h`，`CONFIG_LRU_GEN` 包着。设计文档 `Documentation/mm/multigen_lru.rst` 和下面的注释是同一套说法，行号以源码为准。
-> 导航：[上一篇 问题](./03-lru-problems.md) · [本目录](./README.md) · [下一篇 代码路径](./05-mglru-code-path.md)
+> 导航：[上一篇 问题](./10-03-lru-problems.md) · [本目录](./10-00-reclaim.md) · [下一篇 代码路径](./10-05-mglru-code-path.md)
 
 没编 `CONFIG_LRU_GEN` 时，这些结构不存在。`mm_inline.h:315` 的 `lru_gen_enabled()` 恒返回 false，`lru_gen_age_node`（`vmscan.c:5952`）和 `lru_gen_shrink_node`（`:5962`）的函数体是 `BUILD_BUG()`。调用点包在 `lru_gen_enabled() || lru_gen_switching()` 里，常量条件把调用裁掉。
 
@@ -48,7 +48,7 @@ second chance（`:452-455`）：folio 缺页进来之后，老化至少要查两
 | `u8 seg` | 在 memcg 链表的哪一段（head / tail / default） |
 | `struct hlist_nulls_node list` | 挂到节点的全局回收 memcg 链表 |
 
-`NR_HIST_GENS`：编了 `CONFIG_LRU_GEN_STATS` 时等于 `MAX_NR_GENS`，否则是 1（`:545-549`）。历史统计关掉时，被赶走的代只留最新一格。`lru_gen_full` 要历史，见 [06](./06-lru-vs-mglru.md)。
+`NR_HIST_GENS`：编了 `CONFIG_LRU_GEN_STATS` 时等于 `MAX_NR_GENS`，否则是 1（`:545-549`）。历史统计关掉时，被赶走的代只留最新一格。`lru_gen_full` 要历史，见 [06](./10-06-lru-vs-mglru.md)。
 
 ---
 
@@ -143,7 +143,7 @@ PID 的一个采样点。注释（`:3174-3190`）：
 
 工作集保护：每代出生时盖时间戳。`lru_gen_min_ttl` 非 0 时，最老一代的年龄还在这个毫秒数之内，这个 lruvec 不被驱逐。保不住就 OOM（`:145-152`）。文档列的好处：和具体应用、内存大小无关，所以好配；直接接到 OOM killer，所以比一个软阈值可靠（`:154-158`）。
 
-代码怎么把这些串起来，在 [05](./05-mglru-code-path.md)。
+代码怎么把这些串起来，在 [05](./10-05-mglru-code-path.md)。
 
 ---
 
@@ -163,4 +163,4 @@ PID 的一个采样点。注释（`:3174-3190`）：
 
 ---
 
-[上一篇 问题](./03-lru-problems.md) · [本目录](./README.md) · [下一篇 MGLRU 代码路径](./05-mglru-code-path.md)
+[上一篇 问题](./10-03-lru-problems.md) · [本目录](./10-00-reclaim.md) · [下一篇 MGLRU 代码路径](./10-05-mglru-code-path.md)

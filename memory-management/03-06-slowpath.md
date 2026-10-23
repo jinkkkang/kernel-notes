@@ -1,8 +1,8 @@
 # 3.6 慢路径，以及和回收的交接
 
-**结论**：快路径拿不到页，并且这次分配允许睡觉，就进 `__alloc_pages_slowpath`（`mm/page_alloc.c:4784`）。贵的分配先 compact，可移动的小阶先回收。直接回收发生在**分配者自己的上下文**里，延迟算在这个任务头上。kswapd 是后台的。页是怎么从 LRU 上摘下来的，本篇只交到入口，本体在 [10-reclaim/](../10-reclaim/README.md)。
+**结论**：快路径拿不到页，并且这次分配允许睡觉，就进 `__alloc_pages_slowpath`（`mm/page_alloc.c:4784`）。贵的分配先 compact，可移动的小阶先回收。直接回收发生在**分配者自己的上下文**里，延迟算在这个任务头上。kswapd 是后台的。页是怎么从 LRU 上摘下来的，本篇只交到入口，本体在 [10-00-reclaim.md](./10-00-reclaim.md)。
 
-> 导航：[上一篇 释放](./05-buddy-free.md) · [本目录](./README.md) · [下一篇 高阶](./07-high-order-and-compaction.md)
+> 导航：[上一篇 释放](./03-05-buddy-free.md) · [本目录](./03-00-page-alloc.md) · [下一篇 高阶](./03-07-high-order-and-compaction.md)
 
 ---
 
@@ -31,10 +31,10 @@ __alloc_pages_may_oom            # :4044 → out_of_memory
 
 | 交接 | 分配侧入口 | 接到哪 |
 |---|---|---|
-| 叫醒后台回收 | `wakeup_kswapd`（`vmscan.c:7573`），快路径水位不够或 zone 被 boost 时就会叫 | [10-reclaim/01](../10-reclaim/01-overview.md) 的 kswapd。目标是把水位拉回 HIGH |
+| 叫醒后台回收 | `wakeup_kswapd`（`vmscan.c:7573`），快路径水位不够或 zone 被 boost 时就会叫 | [10-01-overview.md](./10-01-overview.md) 的 kswapd。目标是把水位拉回 HIGH |
 | 直接回收 | `__alloc_pages_direct_reclaim`（`:4464`）→ `try_to_free_pages`（`vmscan.c:6769`）→ `do_try_to_free_pages`（`:6547`）→ `shrink_node`（`:6239`） | 同一篇。`shrink_node` 在那里分叉到经典 LRU 或 MGLRU |
-| 直接压缩 | `__alloc_pages_direct_compact`（`:4139`） | [07](./07-high-order-and-compaction.md) 的 `compact_zone` |
-| OOM | `__alloc_pages_may_oom`（`:4044`）→ `out_of_memory`（`oom_kill.c:1103`） | [10-reclaim/08](../10-reclaim/08-oom.md) |
+| 直接压缩 | `__alloc_pages_direct_compact`（`:4139`） | [07](./03-07-high-order-and-compaction.md) 的 `compact_zone` |
+| OOM | `__alloc_pages_may_oom`（`:4044`）→ `out_of_memory`（`oom_kill.c:1103`） | [10-08-oom.md](./10-08-oom.md) |
 
 直接回收和 kswapd 扫的是 LRU 上的 folio，不是 buddy 空闲页。空闲页已经不在 LRU 上。slowpath 只决定「现在要不要在这个任务里扫」，扫的规则在回收章。
 
@@ -42,7 +42,7 @@ __alloc_pages_may_oom            # :4044 → out_of_memory
 
 ## 本机慢路径有多稀
 
-`vmstat` 里 `allocstall_*` 是进了 slowpath 的次数（`mm/vmstat.c:1338` 的 `TEXTS_FOR_ZONES(ALLOCSTALL)`），`pgscan_direct` / `pgsteal_direct` 是直接回收扫的和偷到的。本机 `allocstall_normal` 11、`allocstall_movable` 373，相对 `pgalloc_*` 的几千万次，慢路径很少，见 [13](../13-observability.md)。
+`vmstat` 里 `allocstall_*` 是进了 slowpath 的次数（`mm/vmstat.c:1338` 的 `TEXTS_FOR_ZONES(ALLOCSTALL)`），`pgscan_direct` / `pgsteal_direct` 是直接回收扫的和偷到的。本机 `allocstall_normal` 11、`allocstall_movable` 373，相对 `pgalloc_*` 的几千万次，慢路径很少，见 [13](./13-observability.md)。
 
 直接回收的次数看 `allocstall_*`，不是看 `pgscan_direct` 的页数。页数是那些次数里扫了多少。
 
@@ -63,4 +63,4 @@ __alloc_pages_may_oom            # :4044 → out_of_memory
 
 ---
 
-[上一篇 释放](./05-buddy-free.md) · [本目录](./README.md) · [下一篇 高阶与 compaction](./07-high-order-and-compaction.md)
+[上一篇 释放](./03-05-buddy-free.md) · [本目录](./03-00-page-alloc.md) · [下一篇 高阶与 compaction](./03-07-high-order-and-compaction.md)

@@ -87,7 +87,7 @@ flowchart TD
 
 ## 1.3 和 cgroup、调度器的边界
 
-**cgroup memory** 不实现 buddy。它在分配和缺页路径上 **charge**：页记到某个 `mem_cgroup`，超过 `memory.high` / `memory.max` 就施压或失败。对象和接口见 [cgroup/06-memory.md](../cgroup/06-memory.md)。本章 [10-reclaim/01](./10-reclaim/01-overview.md) 只讲 `shrink_node()` 里 global reclaim 与 memcg reclaim 怎么分叉，不重写 `try_charge_memcg`。
+**cgroup memory** 不实现 buddy。它在分配和缺页路径上 **charge**：页记到某个 `mem_cgroup`，超过 `memory.high` / `memory.max` 就施压或失败。对象和接口见 [cgroup/06-memory.md](../cgroup/06-memory.md)。本章 [10-01-overview.md](./10-01-overview.md) 只讲 `shrink_node()` 里 global reclaim 与 memcg reclaim 怎么分叉，不重写 `try_charge_memcg`。
 
 **调度器**决定哪个任务占 CPU。内存子系统会让任务睡眠：直接回收、直接 compact、等回写、memcg high 节流、缺页等 folio lock。这些睡眠在 `ps` 里经常是 `D`。本章不讲 EEVDF 怎么选下一个任务。
 

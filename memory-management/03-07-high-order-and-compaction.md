@@ -3,19 +3,19 @@
 **结论**：页的总量够，不代表有连续的 2^order 页。贵的分配（order ≥ 4）或不可移动的高阶，slowpath 先 compact：从 zone 两头对向扫，把可移动页挪到高地址，把空闲页留在低地址，直到中间出现一块够大的空闲。compact 做不成，才回到回收或失败。
 
 > 失败原因是旧 3.6 的原文。`compact_zone` 在 `mm/compaction.c:2562`。
-> 导航：[上一篇 慢路径](./06-slowpath.md) · [本目录](./README.md) · [下一篇 NUMA](./08-numa-policy.md)
+> 导航：[上一篇 慢路径](./03-06-slowpath.md) · [本目录](./03-00-page-alloc.md) · [下一篇 NUMA](./03-08-numa-policy.md)
 
 ---
 
 ## 高阶分配为什么失败
 
-1. **外碎片**。不可移动页（UNMOVABLE）钉在 MOVABLE pageblock 里，buddy 合并不上去。`/proc/buddyinfo` 高阶列是 0 就是这个样子。本机 Normal zone 的 order 10 是 0，order 9 还有 11 块（[13](../13-observability.md)）。
+1. **外碎片**。不可移动页（UNMOVABLE）钉在 MOVABLE pageblock 里，buddy 合并不上去。`/proc/buddyinfo` 高阶列是 0 就是这个样子。本机 Normal zone 的 order 10 是 0，order 9 还有 11 块（[13](./13-observability.md)）。
 2. **要的 migratetype 没有整块，steal 被禁**。`ALLOC_NOFRAGMENT` 时 `__rmqueue` 不做 STEAL（`:2519`）。
 3. **order 超过 `MAX_PAGE_ORDER`（默认 10，4MB）**。`alloc_order_allowed` 直接拒绝。再大用 vmalloc 或 CMA / `alloc_contig_pages`。
 4. **水位 + lowmem_reserve**。DMA32 看起来有空闲，但 reserve 留给更低 zone 的分配，高 zone 的请求进不去。
 5. **cpuset / `__GFP_THISNODE`**。别的节点有连续页，这条 zonelist 不让用。
 6. **HIGHATOMIC 保留占着 pageblock**。原子高阶分配会把大约 1% 的 zone 划成不可随便合并的保留（`reserve_highatomic_pageblock`，`:3447`）。压力大时 `unreserve_highatomic_pageblock`（`:3496`）会吐出来。
-7. **CMA / ISOLATE pageblock** 不能和普通类型合并。见 [05](./05-buddy-free.md) 合并停下来的条件，以及 [09](./09-cma.md)。
+7. **CMA / ISOLATE pageblock** 不能和普通类型合并。见 [05](./03-05-buddy-free.md) 合并停下来的条件，以及 [09](./03-09-cma.md)。
 8. **直接 compact 没做成**。`compact_stall` / `compact_fail` / `compact_success`（`vmstat.c:1389` 一带）。本机直接 compact 的 stall/fail/success 都是 0，但 `compact_daemon_wake` 72：是 kcompactd 在后台扫，不是分配路径上的同步压缩。
 
 `/proc/pagetypeinfo` 能看见每种 migratetype 的 buddy 分布。本机快照读它是 `Permission denied`（通常要 root 或放宽 `kptr_restrict` 一类限制，具体看发行版）。没有这份数就不要猜哪种类型碎了。
@@ -45,7 +45,7 @@
 | `int migratetype` | 直接 compact 需要的迁移类型 |
 | `const unsigned int alloc_flags` | 直接 compact 的分配标志 |
 | `const int highest_zoneidx` | 直接 compact 的最高 zone |
-| `enum migrate_mode mode` | `MIGRATE_ASYNC` / `SYNC_LIGHT` / `SYNC`。模式含义在 [10-reclaim/10](../10-reclaim/10-migration.md) |
+| `enum migrate_mode mode` | `MIGRATE_ASYNC` / `SYNC_LIGHT` / `SYNC`。模式含义在 [10-10-migration.md](./10-10-migration.md) |
 | `bool ignore_skip_hint` | 就算 pageblock 标了 skip 也扫 |
 | `bool no_set_skip_hint` | 扫完不要给 block 打 skip |
 | `bool ignore_block_suitable` | 扫那些被认为不合适的 block |
@@ -90,7 +90,7 @@ compact_zone(cc, capc)                              # compaction.c:2562
   更新 compact_cached_*_pfn，trace_mm_compaction_end
 ```
 
-`migrate_pages` 的模式、返回值和其它调用者在 [10-reclaim/10](../10-reclaim/10-migration.md)。这里的 reason 是 `MR_COMPACTION`，模式是 `cc->mode`（调用点 `compaction.c:2698`）。
+`migrate_pages` 的模式、返回值和其它调用者在 [10-10-migration.md](./10-10-migration.md)。这里的 reason 是 `MR_COMPACTION`，模式是 `cc->mode`（调用点 `compaction.c:2698`）。
 
 异步和同步的 migrate pfn 缓存是分开的（`:2634` 注释）：异步迁移会失败，失败过的位置同步再试仍可能成功。但在找到第一个真正有隔离候选的 pageblock 之前，两条缓存保持同步，避免反复踩同一块空 block（`:2641`）。
 
@@ -117,4 +117,4 @@ compact_zone(cc, capc)                              # compaction.c:2562
 
 ---
 
-[上一篇 慢路径](./06-slowpath.md) · [本目录](./README.md) · [下一篇 NUMA 策略](./08-numa-policy.md)
+[上一篇 慢路径](./03-06-slowpath.md) · [本目录](./03-00-page-alloc.md) · [下一篇 NUMA 策略](./03-08-numa-policy.md)

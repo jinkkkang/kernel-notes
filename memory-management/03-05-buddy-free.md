@@ -3,7 +3,7 @@
 **结论**：用户拿到的页用 `free_pages` / `__free_pages` 还。引用没到 0 就只减计数。到 0 之后，order 0 和能进 PCP 的页先挂回 per-CPU 列表；列表超过 `high`，或者调用者要求立刻进 buddy，才在 `zone->lock` 下调用 `__free_one_page`，按伙伴地址一路合并。
 
 > `__free_one_page` 在 `mm/page_alloc.c:940`。`free_pages` 在 `:5589`，`__free_pages` 在 `:5565`。
-> 导航：[上一篇 PCP](./04-pcp-and-rmqueue.md) · [本目录](./README.md) · [下一篇 慢路径](./06-slowpath.md)
+> 导航：[上一篇 PCP](./03-04-pcp-and-rmqueue.md) · [本目录](./03-00-page-alloc.md) · [下一篇 慢路径](./03-06-slowpath.md)
 
 旧笔记只在 `rmqueue` 那节提了一句合并。这里把释放路径补全。
 
@@ -69,9 +69,9 @@ page_reporting_notify_free(order); /* 除非 FPI_SKIP_REPORT_NOTIFY */
 
 挂回哪一头由 `to_tail` 决定（`:1014-1019`）：`FPI_TO_TAIL` 强制尾部；shuffle 打开且这个阶参与 shuffle 时随机；否则 `buddy_merge_likely` 看再升一阶的机会大不大，机会大就放尾部，让接下来的释放更容易撞上它。
 
-合并后如果 order 达到 `page_reporting_order`，`page_reporting_notify_free`（`:1025`）通知空闲页上报。这是 [12](../12-balloon-fpr-and-overcommit.md) 里 FPR 的入口。`FPI_SKIP_REPORT_NOTIFY` 时跳过。
+合并后如果 order 达到 `page_reporting_order`，`page_reporting_notify_free`（`:1025`）通知空闲页上报。这是 [12](./12-balloon-fpr-and-overcommit.md) 里 FPR 的入口。`FPI_SKIP_REPORT_NOTIFY` 时跳过。
 
-直接 compact 可以在合并环里把刚空出来的页截走：`compaction_capture`（`:963`）。截走的页不再进空闲链，`account_freepages` 把刚才加上的计数减回去。`struct capture_control` 的成员在 [07](./07-high-order-and-compaction.md)。
+直接 compact 可以在合并环里把刚空出来的页截走：`compaction_capture`（`:963`）。截走的页不再进空闲链，`account_freepages` 把刚才加上的计数减回去。`struct capture_control` 的成员在 [07](./03-07-high-order-and-compaction.md)。
 
 ---
 
@@ -116,4 +116,4 @@ free_pcppages_bulk(zone, count, pcp, pindex)   # :1471
 
 ---
 
-[上一篇 PCP](./04-pcp-and-rmqueue.md) · [本目录](./README.md) · [下一篇 慢路径](./06-slowpath.md)
+[上一篇 PCP](./03-04-pcp-and-rmqueue.md) · [本目录](./03-00-page-alloc.md) · [下一篇 慢路径](./03-06-slowpath.md)

@@ -3,7 +3,7 @@
 **结论**：mlock 住的 folio 不进 inactive/active 的扫描。`folio_set_unevictable` 之后，`folio_lru_list`（`include/linux/mm_inline.h:82`）返回 `LRU_UNEVICTABLE`（`mmzone.h:394`），`lruvec_add_folio` 把它放进 `lruvec->lists[LRU_UNEVICTABLE]`。回收看这个标志，不从这条链上偷页。MGLRU 的 `lru_gen_add_folio` 对 unevictable 直接返回 false，所以锁住的页仍在这条经典链上，不进分代链表。
 
 > 系统调用在 `mm/mlock.c`。
-> 导航：[上一篇 OOM](./08-oom.md) · [本目录](./README.md) · [下一篇 迁移](./10-migration.md)
+> 导航：[上一篇 OOM](./10-08-oom.md) · [本目录](./10-00-reclaim.md) · [下一篇 迁移](./10-10-migration.md)
 
 `mlock.c:55-58` 的注释写「unevictable 链表其实不存在」。v7.3 的 `folio_lru_list` 和 `enum lru_list` 里这条链是有的。以这两个定义为准，那句注释和当前链表对不上。
 
@@ -62,4 +62,4 @@ secretmem 和 `vma_supports_mlock` 为假的 VMA 在 `mlock_fixup`（`:476`）�
 
 ---
 
-[上一篇 OOM](./08-oom.md) · [本目录](./README.md) · [下一篇 迁移](./10-migration.md)
+[上一篇 OOM](./10-08-oom.md) · [本目录](./10-00-reclaim.md) · [下一篇 迁移](./10-10-migration.md)

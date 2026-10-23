@@ -3,7 +3,7 @@
 **结论**：一次普通页分配先被 scope API 改写 gfp，填好 `struct alloc_context`，然后 `get_page_from_freelist` 走快路径。快路径失败且不是 `ALLOC_NOLOCK`，才进 `__alloc_pages_slowpath`。`__alloc_pages_noprof` 自己几乎不分配：它调 frozen 版本，成功再 `set_page_refcounted`。frozen 的意思是返回时引用计数还没交给调用者，slowpath 和 charge 失败都可以直接还回 buddy。
 
 > 主文件：`mm/page_alloc.c`、`mm/page_alloc.h`。
-> 导航：[本目录](./README.md) · [下一篇 GFP](./02-gfp-and-scope.md)
+> 导航：[上一篇 页分配](./03-00-page-alloc.md) · [本目录](./03-00-page-alloc.md) · [下一篇 GFP](./03-02-gfp-and-scope.md)
 
 ---
 
@@ -40,7 +40,7 @@ page = __alloc_pages_slowpath(alloc_gfp, order, &ac);
 
 `ALLOC_NOLOCK` 是不能睡眠、不能拿 zone 锁的分配（`alloc_pages_nolock` 一类）。它只有一次尝试。
 
-GFP 位和 scope 怎么改写这份 gfp，见 [02](./02-gfp-and-scope.md)。快路径里 zonelist 怎么走，见 [03](./03-fastpath-freelist.md)。慢路径见 [06](./06-slowpath.md)。
+GFP 位和 scope 怎么改写这份 gfp，见 [02](./03-02-gfp-and-scope.md)。快路径里 zonelist 怎么走，见 [03](./03-03-fastpath-freelist.md)。慢路径见 [06](./03-06-slowpath.md)。
 
 ```mermaid
 flowchart TD
@@ -89,12 +89,12 @@ flowchart TD
 | `__alloc_pages_noprof` | `mm/page_alloc.c:5466` | 上面这个宏的实现。成功后 `set_page_refcounted` |
 | `__alloc_frozen_pages_noprof` | `page_alloc.c:5383` | 快路径 + slowpath。返回时引用还没交给调用者 |
 | `alloc_frozen_pages_noprof` | 声明 `page_alloc.h:240`；无 NUMA 时内联 `:242` | 带策略或本节点的 frozen 入口 |
-| `current_gfp_context` | `include/linux/sched/mm.h:248` | 按任务标志改写 gfp。细节在 [02](./02-gfp-and-scope.md) |
-| `get_page_from_freelist` | `page_alloc.c:3800` | 扫 zonelist。细节在 [03](./03-fastpath-freelist.md) |
-| `__alloc_pages_slowpath` | `page_alloc.c:4784` | 回收 / 压缩 / OOM。细节在 [06](./06-slowpath.md) |
+| `current_gfp_context` | `include/linux/sched/mm.h:248` | 按任务标志改写 gfp。细节在 [02](./03-02-gfp-and-scope.md) |
+| `get_page_from_freelist` | `page_alloc.c:3800` | 扫 zonelist。细节在 [03](./03-03-fastpath-freelist.md) |
+| `__alloc_pages_slowpath` | `page_alloc.c:4784` | 回收 / 压缩 / OOM。细节在 [06](./03-06-slowpath.md) |
 | `get_free_pages_noprof` | `page_alloc.c:5503` | 返回虚拟地址。不能带 HIGHMEM |
 | `alloc_pages_exact_noprof` | `page_alloc.c:5633` | 非 2 的幂。内部分高阶再砍 |
 
 ---
 
-[本目录](./README.md) · [下一篇 GFP 与 scope](./02-gfp-and-scope.md)
+[上一篇 页分配](./03-00-page-alloc.md) · [本目录](./03-00-page-alloc.md) · [下一篇 GFP 与 scope](./03-02-gfp-and-scope.md)

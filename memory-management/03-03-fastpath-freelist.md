@@ -3,7 +3,7 @@
 **结论**：快路径沿 zonelist 走。每个 zone 先过 cpuset、脏页配额和水位，过了才 `rmqueue`。水位用 LOW：空闲页掉到 LOW 以下就该把 kswapd 拉起来，而不是立刻在分配上下文里回收。kswapd 把水位拉回 HIGH 再睡。MIN 是给 PF_MEMALLOC、原子分配的底。
 
 > `get_page_from_freelist` 在 `mm/page_alloc.c:3800`。水位判断在同文件 `:3683` 和 `:3598`。
-> 导航：[上一篇 GFP](./02-gfp-and-scope.md) · [本目录](./README.md) · [下一篇 PCP](./04-pcp-and-rmqueue.md)
+> 导航：[上一篇 GFP](./03-02-gfp-and-scope.md) · [本目录](./03-00-page-alloc.md) · [下一篇 PCP](./03-04-pcp-and-rmqueue.md)
 
 ---
 
@@ -16,11 +16,11 @@
 3. `ALLOC_NOFRAGMENT` 且将要落到远程节点时，清掉这个标志再重试：本地性优先于防碎片（`:3856`）。
 4. 多节点时，kswapd 已经在跑的 node 先跳过，避免误打成 node reclaim（`:3872` 一带）。`nr_online_nodes > 1` 才启用这步（`:3808`）。
 5. 水位不过就下一个 zone。order 0 先走 `zone_watermark_fast`（`:3683`），它内部失败再落到 `__zone_watermark_ok`（`:3598`）。
-6. 过了就 `rmqueue()`。PCP、拆 buddy、claim、steal 在 [04](./04-pcp-and-rmqueue.md)。
+6. 过了就 `rmqueue()`。PCP、拆 buddy、claim、steal 在 [04](./03-04-pcp-and-rmqueue.md)。
 
 水位四档（`include/linux/mmzone.h:808` 的 `enum zone_watermarks`）：`WMARK_MIN`、`WMARK_LOW`、`WMARK_HIGH`，再加 `WMARK_PROMO`。存在 `struct zone._watermark[]`。
 
-`/proc/zoneinfo` 里 DMA 的 `min/low/high/promo` 就是这四档，单位是页。本机 DMA 很小（managed 3840 页），数字也小，见 [13](../13-observability.md)。
+`/proc/zoneinfo` 里 DMA 的 `min/low/high/promo` 就是这四档，单位是页。本机 DMA 很小（managed 3840 页），数字也小，见 [13](./13-observability.md)。
 
 ---
 
@@ -40,7 +40,7 @@ if (usable_free > mark + z->lowmem_reserve[highest_zoneidx])
 
 `watermark_boost` 是 zone 上临时抬高的水位（物理布局章的 zone 成员）。碎片或分配压力会 boost，促使 kswapd 多回收一点。快路径对它的特例在 `zone_watermark_fast`（`:3712-3722`）：`__GFP_HIGH` 的 order-0 分配在查 MIN 水位时，忽略 boost。注释写明 MIN 是「boost 被忽略」的那一点，这样水位低于 LOW 时仍能把 kswapd 叫醒，而原子分配不会被临时抬高的水位挡在外面。
 
-水位不够时，`rmqueue` 的末尾在 zone 被 boost 过的情况下还会 `wakeup_kswapd`（见 [04](./04-pcp-and-rmqueue.md)）。叫醒之后分配者自己继续找下一个 zone，不在这里睡觉。睡觉是 slowpath 的事。
+水位不够时，`rmqueue` 的末尾在 zone 被 boost 过的情况下还会 `wakeup_kswapd`（见 [04](./03-04-pcp-and-rmqueue.md)）。叫醒之后分配者自己继续找下一个 zone，不在这里睡觉。睡觉是 slowpath 的事。
 
 ---
 
@@ -52,8 +52,8 @@ if (usable_free > mark + z->lowmem_reserve[highest_zoneidx])
 | `zone_watermark_fast` | `page_alloc.c:3683` | order 0 的便宜水位检查，失败再进完整判断 |
 | `__zone_watermark_ok` | `page_alloc.c:3598` | 按 order、水位、保留算够不够 |
 | `zone_watermark_ok` | `include/linux/mmzone.h:1633` | 包装 |
-| `wakeup_kswapd` | `mm/vmscan.c:7573` | 水位不够时叫醒后台回收。回收本体在 [10-reclaim/01](../10-reclaim/01-overview.md) |
+| `wakeup_kswapd` | `mm/vmscan.c:7573` | 水位不够时叫醒后台回收。回收本体在 [10-01-overview.md](./10-01-overview.md) |
 
 ---
 
-[上一篇 GFP](./02-gfp-and-scope.md) · [本目录](./README.md) · [下一篇 PCP 与 rmqueue](./04-pcp-and-rmqueue.md)
+[上一篇 GFP](./03-02-gfp-and-scope.md) · [本目录](./03-00-page-alloc.md) · [下一篇 PCP 与 rmqueue](./03-04-pcp-and-rmqueue.md)

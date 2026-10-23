@@ -115,7 +115,7 @@ folio 的 `mapping` 指向这个 `address_space`，`index` 是文件内页偏移
 2. 写不走就放回 LRU，等 flusher。
 3. `PG_writeback` 的页不能立刻释放。直接回收可能在这上面睡觉，kswapd 也会。
 
-`/proc/vmstat` 的 `nr_vmscan_write` 是回收路径自己写出的页。本机是 0：脏页很少，回收主要丢的是干净文件页（`pgsteal_file` 1629411，`pgsteal_anon` 0）。没有 swap 时匿名页本来也换不走，见 [10-reclaim/07](./10-reclaim/07-swap-zswap.md)。
+`/proc/vmstat` 的 `nr_vmscan_write` 是回收路径自己写出的页。本机是 0：脏页很少，回收主要丢的是干净文件页（`pgsteal_file` 1629411，`pgsteal_anon` 0）。没有 swap 时匿名页本来也换不走，见 [10-07-swap-zswap.md](./10-07-swap-zswap.md)。
 
 memcg 有自己的回写域（`cgwb`）。接口和 charge 在 [cgroup/06-memory.md](../cgroup/06-memory.md)。本章不重复那套结构体。
 
@@ -140,7 +140,7 @@ memcg 有自己的回写域（`cgwb`）。接口和 charge 在 [cgroup/06-memory
 | `struct list_head shrinklist` | 同 union | 可收缩的大页 inode |
 | `struct list_head swaplist` | 同 union | 可能在 swap 上的链 |
 | `struct timespec64 i_crtime` | 始终 | 创建时间 |
-| `struct shared_policy policy` | 始终 | 这段 shmem 的 NUMA 策略。`shared_policy` 的成员在 [03-page-alloc/08](./03-page-alloc/08-numa-policy.md) |
+| `struct shared_policy policy` | 始终 | 这段 shmem 的 NUMA 策略。`shared_policy` 的成员在 [03-08-numa-policy.md](./03-08-numa-policy.md) |
 | `struct list_head xattrs` | 始终 | xattr |
 | `pgoff_t fallocend` | 始终 | `fallocate` 到过的最大下标 |
 | `unsigned int fsflags` | 始终 | `FS_IOC_GETFLAGS` / `SETFLAGS` |

@@ -2,7 +2,7 @@
 
 **结论**：v7.3 的 swap 槽状态在 `struct swap_table` 里，每个 cluster 一张，和槽一一对应。定义在 `mm/swap_table.h:10`。`Documentation/mm/swap-table.rst` 讲的就是这张表。槽状态以头文件 `:26-33` 的布局为准。
 
-> 导航：[上一篇 迁移](./10-migration.md) · [本目录](./README.md) · [下一节 KVM](../11-kvm-memory.md)
+> 导航：[上一篇 迁移](./10-10-migration.md) · [本目录](./10-00-reclaim.md) · [下一节 KVM](./11-kvm-memory.md)
 
 `SWAPFILE_CLUSTER`（`mm/swap.h:32`）：`CONFIG_THP_SWAP` 时等于 `HPAGE_PMD_NR`，否则 256（`:35`）。
 
@@ -34,7 +34,7 @@
 
 `SWP_TABLE_USE_PAGE`（`:19`）在 `sizeof(struct swap_table) == PAGE_SIZE` 时为真，这时一张表正好占一页。
 
-槽的分配、回收、cluster 锁状态机其余部分在 `mm/swapfile.c`，本节不展开。换入换出走 [07](./07-swap-zswap.md)。
+槽的分配、回收、cluster 锁状态机其余部分在 `mm/swapfile.c`，本节不展开。换入换出走 [07](./10-07-swap-zswap.md)。
 
 ---
 
@@ -52,4 +52,4 @@
 
 ---
 
-[上一篇 迁移](./10-migration.md) · [本目录](./README.md) · [下一节 KVM](../11-kvm-memory.md)
+[上一篇 迁移](./10-10-migration.md) · [本目录](./10-00-reclaim.md) · [下一节 KVM](./11-kvm-memory.md)
