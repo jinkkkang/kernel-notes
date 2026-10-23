@@ -26,44 +26,74 @@
 
 `CONFIG_COMPACTION` 或 `CONFIG_CMA` 才有这份结构。注释（`:817-821`）把扫描方向说死了：`free_pfn` 从 zone 尾部开始，`migrate_pfn` 从 zone 头部开始，可移动页被挪到 zone 尾部，两者相遇（`free_pfn <= migrate_pfn`）这次 compact 结束。
 
-| 成员 | 中文 |
-|---|---|
-| `struct list_head freepages[NR_PAGE_ORDERS]` | 隔离出来、准备当迁移目的地的空闲页，按阶分链 |
-| `struct list_head migratepages` | 隔离出来、准备搬走的页 |
-| `unsigned int nr_freepages` | 已隔离的空闲页数 |
-| `unsigned int nr_migratepages` | 待迁移页数 |
-| `unsigned long free_pfn` | 空闲扫描的当前位置 |
-| `unsigned long migrate_pfn` | 迁移扫描的当前位置。`isolate_migratepages` 拿它当搜索起点，`isolate_migratepages_block` 把它更新成最后一页隔离之后的下一个 pfn |
-| `unsigned long fast_start_pfn` | 线性扫描可以改从这里开始 |
-| `struct zone *zone` | 正在压的 zone |
-| `unsigned long total_migrate_scanned` | 这次迁移扫描看过的页 |
-| `unsigned long total_free_scanned` | 这次空闲扫描看过的页 |
-| `unsigned short fast_search_fail` | 走空闲链表快速搜索失败的次数 |
-| `short search_order` | 快速搜索从哪一阶开始 |
-| `const gfp_t gfp_mask` | 直接 compact 的调用者 gfp |
-| `int order` | 直接 compact 需要的阶 |
-| `int migratetype` | 直接 compact 需要的迁移类型 |
-| `const unsigned int alloc_flags` | 直接 compact 的分配标志 |
-| `const int highest_zoneidx` | 直接 compact 的最高 zone |
-| `enum migrate_mode mode` | `MIGRATE_ASYNC` / `SYNC_LIGHT` / `SYNC`。模式含义在 [10-10-migration.md](./10-10-migration.md) |
-| `bool ignore_skip_hint` | 就算 pageblock 标了 skip 也扫 |
-| `bool no_set_skip_hint` | 扫完不要给 block 打 skip |
-| `bool ignore_block_suitable` | 扫那些被认为不合适的 block |
-| `bool direct_compaction` | 直接 compact 为真。kcompactd 或 `/proc` 触发的为假 |
-| `bool proactive_compaction` | kcompactd 的主动压缩 |
-| `bool whole_zone` | 要求扫完整 zone，或已经扫完 |
-| `bool contended` | 锁竞争，调用者可以收手 |
-| `bool finish_pageblock` | 把当前 pageblock 扫完。隔离或迁移暂时失败时用来保证向前走 |
-| `bool alloc_contig` | 这次是 `alloc_contig_range`，不是普通高阶分配 |
+```c
+#if defined CONFIG_COMPACTION || defined CONFIG_CMA
+struct compact_control {
+	/*
+	 * 隔离出来、准备当迁移目的地的空闲页，按阶分链。
+	 */
+	struct list_head freepages[NR_PAGE_ORDERS];
+	struct list_head migratepages;	/* 隔离出来、准备搬走的页 */
+	unsigned int nr_freepages;	/* 已隔离的空闲页数 */
+	unsigned int nr_migratepages;	/* 待迁移页数 */
+	unsigned long free_pfn;		/* 空闲扫描的当前位置 */
+	/*
+	 * 迁移扫描的当前位置。isolate_migratepages 拿它当搜索起点，
+	 * isolate_migratepages_block 把它更新成最后一页隔离之后的下一个 pfn。
+	 */
+	unsigned long migrate_pfn;
+	unsigned long fast_start_pfn;	/* 线性扫描可以改从这里开始 */
+	struct zone *zone;		/* 正在压的 zone */
+	unsigned long total_migrate_scanned;	/* 这次迁移扫描看过的页 */
+	unsigned long total_free_scanned;	/* 这次空闲扫描看过的页 */
+	unsigned short fast_search_fail;	/* 走空闲链表快速搜索失败的次数 */
+	short search_order;		/* 快速搜索从哪一阶开始 */
+	const gfp_t gfp_mask;		/* 直接 compact 的调用者 gfp */
+	int order;			/* 直接 compact 需要的阶 */
+	int migratetype;		/* 直接 compact 需要的迁移类型 */
+	const unsigned int alloc_flags;	/* 直接 compact 的分配标志 */
+	const int highest_zoneidx;	/* 直接 compact 的最高 zone */
+	/*
+	 * MIGRATE_ASYNC / SYNC_LIGHT / SYNC。
+	 * 模式含义在 10-10-migration.md。
+	 */
+	enum migrate_mode mode;
+	bool ignore_skip_hint;		/* 就算 pageblock 标了 skip 也扫 */
+	bool no_set_skip_hint;		/* 扫完不要给 block 打 skip */
+	bool ignore_block_suitable;	/* 扫那些被认为不合适的 block */
+	/*
+	 * 直接 compact 为真。kcompactd 或 /proc 触发的为假。
+	 */
+	bool direct_compaction;
+	bool proactive_compaction;	/* kcompactd 的主动压缩 */
+	bool whole_zone;		/* 要求扫完整 zone，或已经扫完 */
+	bool contended;			/* 锁竞争，调用者可以收手 */
+	/*
+	 * 把当前 pageblock 扫完。隔离或迁移暂时失败时用来保证向前走。
+	 */
+	bool finish_pageblock;
+	bool alloc_contig;		/* 这次是 alloc_contig_range，不是普通高阶分配 */
+};
+#endif
+```
 
 `struct capture_control`（同文件 `:867`）给直接 compact 用：合并刚做出一块够大的空闲页时，`__free_one_page` 可以把它截给正在等的分配，不必先挂上 buddy 再被别人拿走。
 
-| 成员 | 中文 |
-|---|---|
-| `struct zone *zone` | 截页的 zone |
-| `int migratetype` | 要的迁移类型 |
-| `int order` | 分配请求的阶。注释写明可以和 compact 的阶不同：defrag 模式会把小块分配提升成 pageblock 阶的压缩，截页仍按原始分配阶匹配，好让 `prep_new_page()` 一致 |
-| `struct page *page` | 截到的页。没截到是 NULL |
+```c
+#if defined CONFIG_COMPACTION || defined CONFIG_CMA
+struct capture_control {
+	struct zone *zone;		/* 截页的 zone */
+	int migratetype;		/* 要的迁移类型 */
+	/*
+	 * 分配请求的阶。可以和 compact 的阶不同：defrag 模式会把小块
+	 * 分配提升成 pageblock 阶的压缩，截页仍按原始分配阶匹配，
+	 * 好让 prep_new_page() 一致。
+	 */
+	int order;
+	struct page *page;		/* 截到的页。没截到是 NULL */
+};
+#endif
+```
 
 ---
 

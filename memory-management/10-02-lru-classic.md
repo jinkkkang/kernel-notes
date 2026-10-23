@@ -13,27 +13,86 @@ MGLRU 打开时，下面「访问时」和「入链时」有一部分函数会�
 
 可回收的 folio 挂在这里。没开 memcg 时，node 的 `__lruvec` 就是唯一的一份。开了 memcg，每个 memcg×node 有自己的 lruvec，`mem_cgroup_lruvec()` 查找。`pgdat->__lruvec` 那份在开了 memcg 时不用。注释（`mmzone.h:1587-1591`）写 `NOTE: THIS IS UNUSED IF MEMCG IS ENABLED`，查找走 `mem_cgroup_lruvec()`。
 
-| 成员 | 条件 | 中文 |
-|---|---|---|
-| `struct list_head lists[NR_LRU_LISTS]` | 始终 | 五条链。下标是 `enum lru_list`（`mmzone.h:389`）：`LRU_INACTIVE_ANON`、`LRU_ACTIVE_ANON`、`LRU_INACTIVE_FILE`、`LRU_ACTIVE_FILE`、`LRU_UNEVICTABLE`。active 的下标比对应 inactive 大 `LRU_ACTIVE`（1），file 比 anon 大 `LRU_FILE`（2）。注释（`:377-380`）要求保持这个算术，扫描代码靠减法选链 |
-| `spinlock_t lru_lock` | 始终 | 这把 lruvec 的锁。memcg 每组一把，避免全局一把锁 |
-| `struct lru_cost cost[ANON_AND_FILE]` | 始终 | 回收匿名和回收文件的代价。代价高的那边少扫。`prepare_scan_control()` 时更新。成员见下 |
-| `spinlock_t cost_lock` | 始终 | 保护 `cost[]` |
-| `atomic_long_t nonresident_age` | 始终 | 不在内存中的「年龄」，由 LRU 移动推动。workingset 用它给 shadow 盖时间戳 |
-| `unsigned long refaults[ANON_AND_FILE]` | 始终 | 上一轮回收时看到的 refault 计数。和当前 `WORKINGSET_ACTIVATE_*` 比较，变了就说明有新工作集在建立 |
-| `unsigned long flags` | 始终 | `enum lruvec_flags`（`:424`）：`LRUVEC_CGROUP_CONGESTED`、`LRUVEC_NODE_CONGESTED`。脏页背后的 BDI 拥塞。kswapd 可以解开 cgroup 设的拥塞，cgroup 回收解不开 kswapd 设的 |
-| `struct lru_gen_folio lrugen` | `CONFIG_LRU_GEN` | 分代链表。全成员在 [04](./10-04-mglru-design.md) |
-| `struct lru_gen_mm_state mm_state` | `CONFIG_LRU_GEN` 且 `CONFIG_LRU_GEN_WALKS_MMU` | 并发走 mm 链表的 Bloom filter 状态。全成员在 [04](./10-04-mglru-design.md) |
-| `struct pglist_data *pgdat` | `CONFIG_MEMCG` | 回指 node |
-| `struct zswap_lruvec_state zswap_lruvec_state` | 始终 | 这个 lruvec 的 zswap 状态。编了 `CONFIG_ZSWAP` 时只有一个成员 `atomic_long_t nr_disk_swapins`（`include/linux/zswap.h:14`）：从磁盘换入、zswap 池里没有的页数，shrinker 用它惩罚以前缩得太狠。没编 zswap 时这个结构是空的（`:40`） |
+```c
+struct lruvec {
+	/*
+	 * 五条链。下标是 enum lru_list（mmzone.h:389）：
+	 * LRU_INACTIVE_ANON、LRU_ACTIVE_ANON、LRU_INACTIVE_FILE、
+	 * LRU_ACTIVE_FILE、LRU_UNEVICTABLE。
+	 * active 的下标比对应 inactive 大 LRU_ACTIVE（1），
+	 * file 比 anon 大 LRU_FILE（2）。
+	 * 注释（:377-380）要求保持这个算术，扫描代码靠减法选链。
+	 */
+	struct list_head		lists[NR_LRU_LISTS];
+	/*
+	 * 这把 lruvec 的锁。memcg 每组一把，避免全局一把锁。
+	 */
+	spinlock_t			lru_lock;
+	/*
+	 * 回收匿名和回收文件的代价。代价高的那边少扫。
+	 * prepare_scan_control() 时更新。成员见下。
+	 */
+	struct lru_cost			cost[ANON_AND_FILE];
+	spinlock_t			cost_lock;	/* 保护 cost[] */
+	/*
+	 * 不在内存中的「年龄」，由 LRU 移动推动。
+	 * workingset 用它给 shadow 盖时间戳。
+	 */
+	atomic_long_t			nonresident_age;
+	/*
+	 * 上一轮回收时看到的 refault 计数。
+	 * 和当前 WORKINGSET_ACTIVATE_* 比较，变了就说明有新工作集在建立。
+	 */
+	unsigned long			refaults[ANON_AND_FILE];
+	/*
+	 * enum lruvec_flags（:424）：LRUVEC_CGROUP_CONGESTED、
+	 * LRUVEC_NODE_CONGESTED。脏页背后的 BDI 拥塞。
+	 * kswapd 可以解开 cgroup 设的拥塞，cgroup 回收解不开 kswapd 设的。
+	 */
+	unsigned long			flags;
+#ifdef CONFIG_LRU_GEN
+	/*
+	 * 分代链表。全成员在 10-04-mglru-design.md。
+	 */
+	struct lru_gen_folio		lrugen;
+#ifdef CONFIG_LRU_GEN_WALKS_MMU
+	/*
+	 * 并发走 mm 链表的 Bloom filter 状态。
+	 * 全成员在 10-04-mglru-design.md。
+	 */
+	struct lru_gen_mm_state		mm_state;
+#endif
+#endif /* CONFIG_LRU_GEN */
+#ifdef CONFIG_MEMCG
+	struct pglist_data *pgdat;		/* 回指 node */
+#endif
+	/*
+	 * 这个 lruvec 的 zswap 状态。
+	 * 编了 CONFIG_ZSWAP 时只有一个成员 atomic_long_t nr_disk_swapins
+	 * （zswap.h:14）：从磁盘换入、zswap 池里没有的页数，shrinker 用它惩罚以前缩得太狠。
+	 * 没编 zswap 时这个结构是空的（zswap.h:40）。
+	 */
+	struct zswap_lruvec_state zswap_lruvec_state;
+};
+```
 
 `struct lru_cost`（`mmzone.h:760`）：
 
-| 成员 | 中文 |
-|---|---|
-| `unsigned long count` | 衰减后的代价。`prepare_scan_control` 里加上「IO 次数 × `SWAP_CLUSTER_MAX` + 旋转页数」，总和超过 lruvec 大小的 1/4 时两边同时除 2 |
-| `unsigned long last_rotated` | 上次采样时的 `PGROTATE_*`。用来取增量 |
-| `unsigned long last_io` | 上次采样时的 refault 恢复计数，匿名侧再加 `NR_VMSCAN_WRITE` |
+```c
+struct lru_cost {
+	/*
+	 * 衰减后的代价。prepare_scan_control 里加上
+	 * 「IO 次数 × SWAP_CLUSTER_MAX + 旋转页数」，
+	 * 总和超过 lruvec 大小的 1/4 时两边同时除 2。
+	 */
+	unsigned long		count;
+	/*
+	 * 上次采样时的 PGROTATE_*。用来取增量。
+	 */
+	unsigned long		last_rotated;
+	unsigned long		last_io;	/* 上次采样时的 refault 恢复计数，匿名侧再加 NR_VMSCAN_WRITE */
+};
+```
 
 `ANON_AND_FILE` 是 2（`mmzone.h:422`）。下标 0 是 `WORKINGSET_ANON`，1 是 `WORKINGSET_FILE`。
 
@@ -43,25 +102,46 @@ MGLRU 打开时，下面「访问时」和「入链时」有一部分函数会�
 
 注释（`:14`）写明 31 个指针加头部，把整个结构对齐到 2 的幂。`FOLIO_BATCH_SIZE` 是 31（`:15`）。
 
-| 成员 | 中文 |
-|---|---|
-| `unsigned char nr` | 现在装了多少个 folio |
-| `unsigned char i` | 队列式消费时的游标。`folio_batch_next` 用它。LRU 批量移动按 `nr` 扫，不靠 `i` |
-| `bool percpu_pvec_drained` | 这个 batch 的 per-CPU 向量是否已经排空。LRU 热路径不读它，留给会混进 exceptional entry 的调用者 |
-| `struct folio *folios[FOLIO_BATCH_SIZE]` | 指针数组。有的调用者会塞 exceptional entry，用 `folio_batch_remove_exceptionals()` 清 |
+```c
+struct folio_batch {
+	unsigned char nr;			/* 现在装了多少个 folio */
+	/*
+	 * 队列式消费时的游标。folio_batch_next 用它。
+	 * LRU 批量移动按 nr 扫，不靠 i。
+	 */
+	unsigned char i;
+	/*
+	 * 这个 batch 的 per-CPU 向量是否已经排空。
+	 * LRU 热路径不读它，留给会混进 exceptional entry 的调用者。
+	 */
+	bool percpu_pvec_drained;
+	/*
+	 * 指针数组。有的调用者会塞 exceptional entry，
+	 * 用 folio_batch_remove_exceptionals() 清。
+	 */
+	struct folio *folios[FOLIO_BATCH_SIZE];
+};
+```
 
 真正挂在每 CPU 上的是 `struct cpu_fbatches`（`mm/folio.c:44`），里面好几份 `folio_batch`：
 
-| 成员 | 条件 | 中文 |
-|---|---|---|
-| `local_lock_t lock` | 始终 | 保护下面这组。关抢占，中断还开着 |
-| `struct folio_batch lru_add` | 始终 | 新页等待入 LRU |
-| `struct folio_batch lru_deactivate_file` | 始终 | 文件页准备降到 inactive |
-| `struct folio_batch lru_deactivate` | 始终 | 匿名页准备降级 |
-| `struct folio_batch lru_lazyfree` | 始终 | `MADV_FREE` 一类可以丢内容的页 |
-| `struct folio_batch lru_activate` | `CONFIG_SMP` | 等待从 inactive 升到 active |
-| `local_lock_t lock_irq` | 始终 | 保护下面需要关中断的 batch |
-| `struct folio_batch lru_move_tail` | 始终 | 把页挪到链表尾 |
+```c
+struct cpu_fbatches {
+	/*
+	 * 保护下面这组。关抢占，中断还开着。
+	 */
+	local_lock_t lock;
+	struct folio_batch lru_add;			/* 新页等待入 LRU */
+	struct folio_batch lru_deactivate_file;	/* 文件页准备降到 inactive */
+	struct folio_batch lru_deactivate;		/* 匿名页准备降级 */
+	struct folio_batch lru_lazyfree;		/* MADV_FREE 一类可以丢内容的页 */
+#ifdef CONFIG_SMP
+	struct folio_batch lru_activate;		/* 等待从 inactive 升到 active */
+#endif
+	local_lock_t lock_irq;				/* 保护下面需要关中断的 batch */
+	struct folio_batch lru_move_tail;		/* 把页挪到链表尾 */
+};
+```
 
 每 CPU 一份：`DEFINE_PER_CPU(struct cpu_fbatches, cpu_fbatches)`（`folio.c:62`）。
 

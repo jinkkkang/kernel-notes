@@ -31,18 +31,25 @@ cgroup.subsys[ssid] → 本节点上该控制器的 css（未启用则可能为�
 
 `include/linux/cgroup-defs.h:181`
 
-| 成员（节选） | 中文 |
-|---|---|
-| `struct cgroup *cgroup` | 挂在哪个 cgroup 节点上 |
-| `struct cgroup_subsys *ss` | 属于哪个子系统；`cgroup.self` 的 ss 为 NULL |
-| `struct percpu_ref refcnt` | 引用计数；`css_get` / `css_put` / `css_tryget` |
-| `struct css_rstat_cpu __percpu *rstat_cpu` | 分层统计 per-CPU（见 [08](./08-psi-rstat.md)） |
-| `struct list_head sibling` / `children` | 同父兄弟 / 子 css 链表 |
-| `int id` | 子系统内唯一 ID；root 常为 1 |
-| `unsigned int flags` | 状态标志 |
-| `u64 serial_nr` | 全局递增序号，保证 children 有序可断点迭代 |
-| `atomic_t online_cnt` | 自己与孩子 online 计数，防父先 offline |
-| `destroy_work` / `destroy_rwork` | 销毁与 RCU 回收 |
+笔记点名的成员从结构体开头起彼此相邻。
+
+```c
+	struct cgroup		*cgroup;	/* 挂在哪个 cgroup 节点上 */
+	struct cgroup_subsys	*ss;		/* 所属子系统；cgroup.self 的 ss 为 NULL */
+	struct percpu_ref	refcnt;		/* 引用计数；css_get / css_put / css_tryget */
+	struct css_rstat_cpu __percpu *rstat_cpu; /* 分层统计 per-CPU */
+	struct list_head	sibling;	/* 同父兄弟 */
+	struct list_head	children;	/* 子 css 链表 */
+	int			id;		/* 子系统内唯一 ID；root 常为 1 */
+	unsigned int		flags;		/* 状态标志 */
+	/*
+	 * 全局递增序号，保证 children 按它升序，迭代可以中途停、再续。
+	 */
+	u64			serial_nr;
+	atomic_t		online_cnt;	/* 自己与孩子 online 计数，防父先 offline */
+	struct work_struct	destroy_work;	/* 销毁 */
+	struct rcu_work		destroy_rwork;	/* RCU 回收 */
+```
 
 控制器私有结构的第一成员几乎总是 `struct cgroup_subsys_state css`（例如 `struct mem_cgroup`、`struct pids_cgroup`），再用 `container_of` 找回大结构——与 [locks-and-ds/01](../locks-and-ds/01-c-primer.md) 同一套路。
 
@@ -52,18 +59,33 @@ cgroup.subsys[ssid] → 本节点上该控制器的 css（未启用则可能为�
 
 `include/linux/cgroup-defs.h:286`
 
-| 成员（节选） | 中文 |
-|---|---|
-| `struct cgroup_subsys_state *subsys[CGROUP_SUBSYS_COUNT]` | 每个子系统一个 css 指针；创建后基本不可变（除 boot） |
-| `refcount_t refcount` | css_set 引用 |
-| `struct css_set *dom_cset` | 域 cgroup 对应的 cset；threaded 时指最近 domain 祖先 |
-| `struct cgroup *dfl_cgrp` | 默认层次上关联的 cgroup |
-| `int nr_tasks` | 使用本 cset 的任务数（`css_set_lock`） |
-| `struct list_head tasks` / `mg_tasks` / `dying_tasks` | 正常 / 迁移中 / 正在死的任务 |
-| `struct list_head e_cset_node[…]` | 挂到「有效 css 所属 cgroup」上，便于按控制器遍历 |
-| `struct hlist_node hlist` | 全局 hash，按内容查重用已有 cset |
-| `struct list_head cgrp_links` | 与各层次 cgroup 的链接 |
-| `mg_src_cgrp` / `mg_dst_cgrp` / … | 迁移上下文 |
+```c
+	/*
+	 * 每个子系统一个 css。创建后基本不可变，boot 时注册子系统除外。
+	 */
+	struct cgroup_subsys_state *subsys[CGROUP_SUBSYS_COUNT];
+	refcount_t		refcount;	/* css_set 引用 */
+	/*
+	 * 域 cgroup 对应的 cset。threaded 时指最近 domain 祖先的 cset。
+	 */
+	struct css_set		*dom_cset;
+	struct cgroup		*dfl_cgrp;	/* 默认层次上关联的 cgroup */
+	int			nr_tasks;	/* 使用本 cset 的任务数（css_set_lock） */
+	struct list_head	tasks;		/* 正常任务 */
+	struct list_head	mg_tasks;	/* 迁移中的任务 */
+	struct list_head	dying_tasks;	/* 正在死的任务 */
+	/* 此处省略本组未记录的成员 */
+	/*
+	 * 挂到「有效 css 所属 cgroup」上，便于按控制器遍历。
+	 */
+	struct list_head	e_cset_node[CGROUP_SUBSYS_COUNT];
+	/* 此处省略本组未记录的成员 */
+	struct hlist_node	hlist;		/* 全局 hash，按内容查重用已有 cset */
+	struct list_head	cgrp_links;	/* 与各层次 cgroup 的链接 */
+	/* 此处省略本组未记录的成员 */
+	struct cgroup		*mg_src_cgrp;	/* 迁移源 cgroup */
+	struct cgroup		*mg_dst_cgrp;	/* 迁移目标 cgroup */
+```
 
 **直觉**：css_set 是「配置指纹」。大量进程共享同一组合时，内核复用同一个 `css_set`，靠 `refcount` 活着。
 
@@ -73,39 +95,64 @@ cgroup.subsys[ssid] → 本节点上该控制器的 css（未启用则可能为�
 
 ## 2.4 `struct cgroup`
 
-`include/linux/cgroup-defs.h:486`（大结构，分组记）
+`include/linux/cgroup-defs.h:486`（大结构，按组给出带注释的源码片段）
 
 ### 身份与树形
 
-| 成员 | 中文 |
-|---|---|
-| `struct cgroup_subsys_state self` | 节点自身的 css |
-| `unsigned long flags` | 如 `CGRP_FREEZE` 等 |
-| `int level` | 深度；root = 0 |
-| `int max_depth` / `max_descendants` | 用户可配上限（防树爆炸） |
-| `int nr_descendants` / `nr_dying_descendants` | 活着的 / 垂死的后代计数 |
-| `struct cgroup *dom_cgrp` | domain cgroup（threaded 子树用） |
-| `struct cgroup *ancestors[]` | 含自己在内的祖先数组（flex array） |
+```c
+/* --- 身份与树形 --- */
+	struct cgroup_subsys_state self;	/* 节点自身的 css */
+	unsigned long		flags;		/* 如 CGRP_FREEZE 等 */
+	int			level;		/* 深度；root = 0 */
+	int			max_depth;	/* 用户可配的最大深度 */
+	int			nr_descendants;	/* 活着的后代计数 */
+	int			nr_dying_descendants; /* 垂死的后代计数 */
+	int			max_descendants; /* 用户可配的后代上限 */
+	/* 此处省略本组未记录的成员 */
+	struct cgroup		*dom_cgrp;	/* domain cgroup（threaded 子树用） */
+	/* 此处省略本组未记录的成员 */
+	/*
+	 * 含自己在内的祖先数组（flex array）。
+	 * union 是 DECLARE_FLEX_ARRAY 的写法；_root_ancestor / _low_ancestors
+	 * 不是另一份祖先名单。
+	 */
+	union {
+		DECLARE_FLEX_ARRAY(struct cgroup *, ancestors);
+		struct {
+			struct cgroup *_root_ancestor;
+			DECLARE_FLEX_ARRAY(struct cgroup *, _low_ancestors);
+		};
+	};
+```
 
 ### 控制器开关
 
-| 成员 | 中文 |
-|---|---|
-| `u32 subtree_control` | 用户通过 `cgroup.subtree_control` 配置的「允许孩子启用」掩码 |
-| `u32 subtree_ss_mask` | **有效**掩码（可含依赖控制器） |
-| `struct cgroup_subsys_state __rcu *subsys[]` | 本节点各控制器 css |
+```c
+/* --- 控制器开关 --- */
+	/*
+	 * 用户通过 cgroup.subtree_control 配置的「允许孩子启用」掩码。
+	 */
+	u32			subtree_control;
+	u32			subtree_ss_mask; /* 有效掩码（可含依赖控制器） */
+	/* 此处省略本组未记录的成员 */
+	struct cgroup_subsys_state __rcu *subsys[CGROUP_SUBSYS_COUNT]; /* 本节点各控制器 css */
+```
 
 ### kernfs / 文件 / 统计
 
-| 成员 | 中文 |
-|---|---|
-| `struct kernfs_node *kn` | 对应 `/sys/fs/cgroup/...` 目录 |
-| `struct cgroup_file procs_file` / `events_file` | `cgroup.procs` / `cgroup.events` |
-| `struct cgroup_file psi_files[]` | `*.pressure` |
-| `struct cgroup_rstat_base_cpu __percpu *rstat_base_cpu` | base 统计 |
-| `struct psi_group *psi` | 压力记账 |
-| `struct cgroup_freezer_state freezer` | v2 freezer 状态 |
-| `struct cgroup_bpf bpf` | cgroup BPF 附着点 |
+```c
+/* --- kernfs / 文件 / 统计 --- */
+	struct kernfs_node	*kn;		/* 对应 /sys/fs/cgroup/... 目录 */
+	struct cgroup_file	procs_file;	/* cgroup.procs */
+	struct cgroup_file	events_file;	/* cgroup.events */
+	struct cgroup_file	psi_files[NR_PSI_RESOURCES]; /* *.pressure */
+	/* 此处省略本组未记录的成员 */
+	struct cgroup_rstat_base_cpu __percpu *rstat_base_cpu; /* base 统计 */
+	/* 此处省略本组未记录的成员 */
+	struct psi_group	*psi;		/* 压力记账 */
+	struct cgroup_bpf	bpf;		/* cgroup BPF 附着点 */
+	struct cgroup_freezer_state freezer;	/* v2 freezer 状态 */
+```
 
 ### 根
 
@@ -117,17 +164,33 @@ cgroup.subsys[ssid] → 本节点上该控制器的 css（未启用则可能为�
 
 `include/linux/cgroup-defs.h:784`
 
-| 回调（节选） | 中文 |
-|---|---|
-| `css_alloc` / `css_online` / `css_offline` / `css_free` … | css 生命周期 |
-| `css_rstat_flush` | 刷该子系统的分层统计 |
-| `can_attach` / `attach` / `cancel_attach` | 进程迁入 |
-| `can_fork` / `fork` / `cancel_fork` | 创建子进程（如 pids） |
-| `exit` / `release` | 任务退出路径 |
-| `bool threaded` | 是否支持 v2 threaded 模式 |
-| `bool implicit_on_dfl` | 默认层次隐式启用（对用户透明） |
-| `dfl_cftypes` / `legacy_cftypes` | v2 / v1 接口文件表 |
-| `const char *name` | 控制器名（出现在 `cgroup.controllers`） |
+```c
+	struct cgroup_subsys_state *(*css_alloc)(struct cgroup_subsys_state *parent_css); /* 分配 css */
+	int (*css_online)(struct cgroup_subsys_state *css);	/* css 上线 */
+	void (*css_offline)(struct cgroup_subsys_state *css);	/* css 下线 */
+	/* 此处省略本组未记录的成员 */
+	void (*css_free)(struct cgroup_subsys_state *css);	/* 释放 css */
+	/* 此处省略本组未记录的成员 */
+	void (*css_rstat_flush)(struct cgroup_subsys_state *css, int cpu); /* 刷该子系统的分层统计 */
+	/* 此处省略本组未记录的成员 */
+	int (*can_attach)(struct cgroup_taskset *tset);		/* 迁入前检查 */
+	void (*cancel_attach)(struct cgroup_taskset *tset);	/* 迁入取消 */
+	void (*attach)(struct cgroup_taskset *tset);		/* 进程迁入 */
+	int (*can_fork)(struct task_struct *task,
+			struct css_set *cset);			/* 创建子进程前检查（如 pids） */
+	void (*cancel_fork)(struct task_struct *task, struct css_set *cset); /* 创建取消 */
+	void (*fork)(struct task_struct *task);			/* 子进程创建完成 */
+	void (*exit)(struct task_struct *task);			/* 任务退出 */
+	void (*release)(struct task_struct *task);		/* 任务释放 */
+	/* 此处省略本组未记录的成员 */
+	bool implicit_on_dfl:1;		/* 默认层次隐式启用（对用户透明） */
+	bool threaded:1;		/* 是否支持 v2 threaded 模式 */
+	/* 此处省略本组未记录的成员 */
+	const char *name;		/* 控制器名（出现在 cgroup.controllers） */
+	/* 此处省略本组未记录的成员 */
+	struct cftype *dfl_cftypes;	/* v2 接口文件表 */
+	struct cftype *legacy_cftypes;	/* v1 接口文件表 */
+```
 
 注册表：`include/linux/cgroup_subsys.h` 里的 `SUBSYS(name)` 宏展开。
 

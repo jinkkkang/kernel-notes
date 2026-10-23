@@ -8,16 +8,37 @@
 
 ## `struct mempolicy`（`include/linux/mempolicy.h:47`，`CONFIG_NUMA`）
 
-| 成员 | 中文 |
-|---|---|
-| `atomic_t refcnt` | 引用。`mpol_put` 减到 0 释放。`mpol_dup` 出来的新对象引用从 1 起 |
-| `unsigned short mode` | `MPOL_*`，见下 |
-| `unsigned short flags` | `MPOL_F_STATIC_NODES` / `RELATIVE_NODES` / `NUMA_BALANCING`，以及内部的 `MPOL_F_SHARED`、`MPOL_F_MOF`、`MPOL_F_MORON` |
-| `nodemask_t nodes` | bind / interleave / preferred 用的节点集合 |
-| `int home_node` | `MPOL_BIND` 和 `MPOL_PREFERRED_MANY` 的 home node |
-| `nodemask_t cpuset_mems_allowed` | 与下一字段同 union。相对模式时，相对这组 cpuset 允许的节点 |
-| `nodemask_t user_nodemask` | 同 union。用户传入的 nodemask |
-| `struct rcu_head rcu` | 释放走 RCU |
+```c
+#ifdef CONFIG_NUMA
+struct mempolicy {
+	/*
+	 * 引用。mpol_put 减到 0 释放。
+	 * mpol_dup 出来的新对象引用从 1 起。
+	 */
+	atomic_t refcnt;
+	unsigned short mode;		/* MPOL_*，见下 */
+	/*
+	 * MPOL_F_STATIC_NODES / RELATIVE_NODES / NUMA_BALANCING，
+	 * 以及内部的 MPOL_F_SHARED、MPOL_F_MOF、MPOL_F_MORON。
+	 */
+	unsigned short flags;
+	nodemask_t nodes;		/* bind / interleave / preferred 用的节点集合 */
+	/*
+	 * MPOL_BIND 和 MPOL_PREFERRED_MANY 的 home node。
+	 */
+	int home_node;
+
+	union {
+		/*
+		 * 相对模式时，相对这组 cpuset 允许的节点。
+		 */
+		nodemask_t cpuset_mems_allowed;
+		nodemask_t user_nodemask;	/* 用户传入的 nodemask */
+	} w;
+	struct rcu_head rcu;		/* 释放走 RCU */
+};
+#endif
+```
 
 没编 `CONFIG_NUMA` 时，`struct mempolicy` 是空结构（`:188`），`get_task_policy` 返回 NULL。
 
@@ -35,7 +56,22 @@
 
 `MPOL_F_STATIC_NODES`：用户给的节点号不随 cpuset 重新解释。`MPOL_F_RELATIVE_NODES`：当成相对 cpuset 允许集合的偏移。两个不要同时设。`MPOL_F_NUMA_BALANCING`：允许 NUMA balancing 在这个策略上做 migrate-on-fault。
 
-共享映射（shmem、某些文件）的策略不挂在单个 VMA 上，挂在区间树里。`struct shared_policy`（`:113`）两个成员：`struct rb_root root`、`rwlock_t lock`。树上的 `struct sp_node`（`:117`）：`struct rb_node nd`、`pgoff_t start`、`pgoff_t end`、`struct mempolicy *policy`。
+共享映射（shmem、某些文件）的策略不挂在单个 VMA 上，挂在区间树里。`struct shared_policy`（`:113`）和树上的 `struct sp_node`（`:117`）：
+
+```c
+#ifdef CONFIG_NUMA
+struct shared_policy {
+	struct rb_root root;	/* 共享策略的区间树 */
+	rwlock_t lock;		/* 保护这棵树 */
+};
+
+struct sp_node {
+	struct rb_node nd;		/* 区间树节点 */
+	pgoff_t start, end;		/* 这段策略覆盖的页偏移 */
+	struct mempolicy *policy;	/* 挂在这段上的策略 */
+};
+#endif
+```
 
 ```text
 set_mempolicy(mode, nmask, maxnode)          # SYSCALL_DEFINE3 mempolicy.c:1857
@@ -71,16 +107,27 @@ VMA 上的指针是 `vm_policy`（[06](./06-mm-and-vma.md)）。缺页分配匿�
 
 `Documentation/admin-guide/mm/numaperf.rst` 讲的是：一个 node 上的内存带宽和延迟可以不一样（本地 DRAM、慢一档的内存）。内核用 `struct access_coordinate`（`include/linux/node.h:29`）装四个数：
 
-| 成员 | 中文 |
-|---|---|
-| `unsigned int read_bandwidth` | 读带宽，MB/s |
-| `unsigned int write_bandwidth` | 写带宽，MB/s |
-| `unsigned int read_latency` | 读延迟，纳秒 |
-| `unsigned int write_latency` | 写延迟，纳秒 |
+```c
+struct access_coordinate {
+	unsigned int read_bandwidth;	/* 读带宽，MB/s */
+	unsigned int write_bandwidth;	/* 写带宽，MB/s */
+	unsigned int read_latency;	/* 读延迟，纳秒 */
+	unsigned int write_latency;	/* 写延迟，纳秒 */
+};
+```
 
 `ACCESS_COORDINATE_LOCAL` 是到最近 initiator 的坐标，`ACCESS_COORDINATE_CPU` 是到最近 CPU node 的坐标（`:42`）。用户态从 `/sys/devices/system/node/nodeN/access0` / `access1` 读，具体文件名以该文档和当前内核的 sysfs 为准。
 
-`mempolicy_set_node_perf`（`mm/mempolicy.c:221`）把坐标收成带宽：`min(read_bandwidth, write_bandwidth)`，写进 `node_bw_table`。`MPOL_WEIGHTED_INTERLEAVE` 的权重在 `struct weighted_interleave_state`（`mempolicy.c:158`）：`bool mode_auto`、柔性数组 `u8 iw_table[]`。auto 模式下按带宽重算权重；手工模式只更新带宽表，不改当前权重（函数注释 `:242-245`）。
+`mempolicy_set_node_perf`（`mm/mempolicy.c:221`）把坐标收成带宽：`min(read_bandwidth, write_bandwidth)`，写进 `node_bw_table`。`MPOL_WEIGHTED_INTERLEAVE` 的权重在 `struct weighted_interleave_state`（`mempolicy.c:158`）：
+
+```c
+struct weighted_interleave_state {
+	bool mode_auto;		/* 为真时按带宽自动算权重 */
+	u8 iw_table[];		/* 柔性数组，每个 node 一个权重 */
+};
+```
+
+auto 模式下按带宽重算权重；手工模式只更新带宽表，不改当前权重（函数注释 `:242-245`）。
 
 ---
 

@@ -27,21 +27,31 @@
 
 ---
 
-## 6.2 `struct mem_cgroup`（分组记）
+## 6.2 `struct mem_cgroup`（节选）
 
 `include/linux/memcontrol.h:202`
 
-| 成员（节选） | 中文 |
-|---|---|
-| `struct cgroup_subsys_state css` | 嵌入的 css（第一成员） |
-| `struct mem_cgroup_private_id id` | 可在 cgroup 死后仍标识对象的 ID |
-| `struct page_counter memory` | 主计数器（v1/v2） |
-| `struct page_counter swap` / `memsw` | v2 swap / v1 mem+swap |
-| `struct work_struct high_work` | 超 high 时的处理工作 |
-| `bool oom_group` | 对应 `memory.oom.group` |
-| `atomic_long_t memory_events[]` | `memory.events` |
-| `struct memcg_vmstats *vmstats` | `memory.stat` 后端 |
-| `struct memcg_vmstats_percpu __percpu *vmstats_percpu` | per-CPU 热路径统计 |
+```c
+#ifdef CONFIG_MEMCG
+	struct cgroup_subsys_state css;		/* 嵌入的 css（第一成员） */
+	struct mem_cgroup_private_id id;	/* 可在 cgroup 死后仍标识对象的 ID */
+	struct page_counter memory;		/* 主计数器（v1/v2） */
+	union {
+		struct page_counter swap;	/* v2 swap */
+		struct page_counter memsw;	/* v1 mem+swap */
+	};
+	/* 此处省略本组未记录的成员 */
+	struct work_struct high_work;		/* 超 high 时的处理工作 */
+	/* 此处省略本组未记录的成员 */
+	bool oom_group;				/* 对应 memory.oom.group */
+	/* 此处省略本组未记录的成员 */
+	struct memcg_vmstats *vmstats;		/* memory.stat 后端 */
+	atomic_long_t memory_events[MEMCG_NR_MEMORY_EVENTS]; /* memory.events */
+	/* 此处省略本组未记录的成员 */
+	struct memcg_vmstats_percpu __percpu *vmstats_percpu
+		____cacheline_aligned_in_smp;	/* per-CPU 热路径统计 */
+#endif
+```
 
 计数器类型是 `page_counter`：`try_charge` / `charge` / `uncharge` 层级向上累加。
 

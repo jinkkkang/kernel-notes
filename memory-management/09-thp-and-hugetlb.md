@@ -91,40 +91,63 @@ DPDK 的 `virtio-user` / 物理网卡驱动要的是宿主机大页。guest 里�
 
 `struct resv_map`（`include/linux/hugetlb.h:50`）：
 
-| 成员 | 条件 | 中文 |
-|---|---|---|
-| `struct kref refs` | 始终 | 引用。最后一个放下走 `resv_map_release` |
-| `spinlock_t lock` | 始终 | 保护 `regions` |
-| `struct list_head regions` | 始终 | 已预留或已实例化的区间 |
-| `long adds_in_progress` | 始终 | 正在 `region_chg` 还没 `region_add` / `region_abort` 的次数 |
-| `struct list_head region_cache` | 始终 | 预先分配的 `file_region`，避免在锁里 `kmalloc` |
-| `long region_cache_count` | 始终 | 缓存里还有几个 |
-| `struct rw_semaphore rw_sema` | 始终 | 和缺页、截断、PMD 共享配合的信号量 |
-| `struct page_counter *reservation_counter` | `CONFIG_CGROUP_HUGETLB` | 私有映射上，用来退还预留 charge。0 表示共享映射，或没开 cgroup 记账 |
-| `unsigned long pages_per_hpage` | 同上 | 一页大页等于多少基页 |
-| `struct cgroup_subsys_state *css` | 同上 | 对应的 hugetlb cgroup |
+```c
+struct resv_map {
+	/*
+	 * 引用。最后一个放下走 resv_map_release。
+	 */
+	struct kref refs;
+	spinlock_t lock;			/* 保护 regions */
+	struct list_head regions;		/* 已预留或已实例化的区间 */
+	long adds_in_progress;			/* 正在 region_chg 还没 region_add / region_abort 的次数 */
+	struct list_head region_cache;		/* 预先分配的 file_region，避免在锁里 kmalloc */
+	long region_cache_count;		/* 缓存里还有几个 */
+	struct rw_semaphore rw_sema;		/* 和缺页、截断、PMD 共享配合的信号量 */
+#ifdef CONFIG_CGROUP_HUGETLB
+	/*
+	 * 私有映射上，用来退还预留 charge。
+	 * 0 表示共享映射，或没开 cgroup 记账。
+	 */
+	struct page_counter *reservation_counter;
+	unsigned long pages_per_hpage;		/* 一页大页等于多少基页 */
+	struct cgroup_subsys_state *css;	/* 对应的 hugetlb cgroup */
+#endif
+};
+```
 
 区间是 `struct file_region`（`:89`）。`from` 含、`to` 不含，单位是大页下标。`[0, 4)` 就是 4 页（注释里的例子，`:81-84`）。
 
-| 成员 | 条件 | 中文 |
-|---|---|---|
-| `struct list_head link` | 始终 | 挂在 `resv_map->regions` 上 |
-| `long from` | 始终 | 起始下标 |
-| `long to` | 始终 | 结束下标，开区间 |
-| `struct page_counter *reservation_counter` | `CONFIG_CGROUP_HUGETLB` | 共享映射上，这一段预留该退给哪个计数器 |
-| `struct cgroup_subsys_state *css` | 同上 | 对应 css |
+```c
+struct file_region {
+	struct list_head link;			/* 挂在 resv_map->regions 上 */
+	long from;				/* 起始下标 */
+	long to;				/* 结束下标，开区间 */
+#ifdef CONFIG_CGROUP_HUGETLB
+	struct page_counter *reservation_counter; /* 共享映射上，这一段预留该退给哪个计数器 */
+	struct cgroup_subsys_state *css;	/* 对应 css */
+#endif
+};
+```
 
 子池 `struct hugepage_subpool`（`:38`）挂在 hugetlbfs inode 上，管这个文件自己的上限和下限：
 
-| 成员 | 中文 |
-|---|---|
-| `spinlock_t lock` | 保护计数 |
-| `long count` | 当前计数 |
-| `long max_hpages` | 上限。`-1` 表示不封顶 |
-| `long used_hpages` | 已用，含已分配和已预留 |
-| `struct hstate *hstate` | 哪种尺寸 |
-| `long min_hpages` | 下限。`-1` 表示没有下限 |
-| `long rsv_hpages` | 为了满足下限，已经向全局池预留的页 |
+```c
+struct hugepage_subpool {
+	spinlock_t lock;	/* 保护计数 */
+	long count;		/* 当前计数 */
+	/*
+	 * 上限。-1 表示不封顶。
+	 */
+	long max_hpages;
+	long used_hpages;	/* 已用，含已分配和已预留 */
+	struct hstate *hstate;	/* 哪种尺寸 */
+	/*
+	 * 下限。-1 表示没有下限。
+	 */
+	long min_hpages;
+	long rsv_hpages;	/* 为了满足下限，已经向全局池预留的页 */
+};
+```
 
 ```text
 mmap hugetlbfs / MAP_HUGETLB

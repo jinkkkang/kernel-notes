@@ -56,46 +56,156 @@ shrink_node_memcgs(pgdat, sc);         /* :6160 */
 
 一次回收调用的全部参数和计数。kswapd、直接回收、memcg 回收、proactive reclaim 各填各的，进的是同一个 `shrink_node`。
 
-| 成员 | 中文 |
-|---|---|
-| `unsigned long nr_to_reclaim` | 这次希望收回多少页。`shrink_list()` 朝这个数做 |
-| `const nodemask_t *nodemask` | 调用者允许扫的节点。NULL 表示全扫 |
-| `struct mem_cgroup *target_mem_cgroup` | 撞上限、因而成为这次回收主要目标的 memcg。全局回收是 NULL 或 root。`cgroup_reclaim()` / `root_reclaim()` 看的就是它 |
-| `unsigned long anon_cost` | 匿名侧的回收代价，给经典路径的扫描比例用。`prepare_scan_control()` 从 `lruvec->cost[]` 填进来 |
-| `unsigned long file_cost` | 文件侧的回收代价。同上 |
-| `int *proactive_swappiness` | 用户态主动回收带来的 swappiness 指针。读的时候走 `sc_swappiness()`（`:203`），不要直接解引用 |
-| `unsigned int may_deactivate:2` | 是否允许把 active 降到 inactive。`DEACTIVATE_ANON` 是 1，`DEACTIVATE_FILE` 是 2（`:102-103`） |
-| `unsigned int force_deactivate:1` | 强制两侧都允许降级 |
-| `unsigned int skipped_deactivate:1` | 本轮想降级但 `may_deactivate` 没允许，记一笔，调用者可以再决定 |
-| `unsigned int may_writepage:1` | 回收时能不能把脏页写出去。来自 `zone_reclaim_mode` 或 boost 回收 |
-| `unsigned int may_unmap:1` | 能不能 unmap 已经映射的 folio。来自 `zone_reclaim_mode` |
-| `unsigned int may_swap:1` | 能不能把匿名页换出去。来自 zone reclaim、boost、cgroup 限制 |
-| `unsigned int no_cache_trim_mode:1` | 不许打开 `cache_trim_mode` |
-| `unsigned int cache_trim_mode_failed:1` | `cache_trim_mode` 至少失败过一次 |
-| `unsigned int proactive:1` | 用户态主动回收（`memory.reclaim` 或 MGLRU debugfs 的 `-` 命令） |
-| `unsigned int memcg_low_reclaim:1` | 已经因为 `memory.low` 跳过一轮、什么都没收回来，回来再扫受保护的内存，避免直接 OOM |
-| `unsigned int memcg_low_skipped:1` | 这一轮有 memcg 因为 `memory.low` 被减轻或整组跳过 |
-| `unsigned int memcg_full_walk:1` | 共享 cgroup 树的部分遍历失败，改扫整棵树 |
-| `unsigned int hibernation_mode:1` | 休眠路径上的回收 |
-| `unsigned int compaction_ready:1` | 某个 zone 已经有足够连续页，可以去 compact，不必再为高阶把缓存扫光 |
-| `unsigned int cache_trim_mode:1` | 当前 node 上有容易回收的冷文件页，先剪缓存、先别动匿名 |
-| `unsigned int file_is_tiny:1` | 当前 node 的文件 folio 少到危险。经典路径会转去扫匿名，见 [02](./10-02-lru-classic.md) 的 cache trap |
-| `unsigned int no_demotion:1` | 只丢弃，不向更慢的内存层迁移 |
-| `s8 order` | 触发这次回收的分配阶 |
-| `s8 priority` | 扫描强度。每次扫 `total_size >> priority` 页。优先级从 12 往下掉，扫的比例翻倍 |
-| `s8 reclaim_idx` | 最高隔离到哪一档 zone。比它高的 zone 上的 folio 先跳过 |
-| `gfp_t gfp_mask` | 这次回收上下文的 GFP。决定能不能 IO、能不能进文件系统 |
-| `unsigned long nr_scanned` | 已经扫过的 inactive 页数 |
-| `unsigned long nr_reclaimed` | `shrink_zones()` 到目前为止放出的页数 |
-| `struct { dirty, congested, writeback, immediate, taken } nr` | 这一轮遇到的脏页、拥塞、写回中、需要立刻处理、实际隔离的计数。匿名结构，没有单独的类型名 |
-| `struct reclaim_state reclaim_state` | 嵌在 scan_control 里，不是指针。成员见下 |
+```c
+struct scan_control {
+	/*
+	 * 这次希望收回多少页。shrink_list() 朝这个数做。
+	 */
+	unsigned long nr_to_reclaim;
+
+	/*
+	 * 调用者允许扫的节点。NULL 表示全扫。
+	 */
+	const nodemask_t *nodemask;
+
+	/*
+	 * 撞上限、因而成为这次回收主要目标的 memcg。
+	 * 全局回收是 NULL 或 root。cgroup_reclaim() / root_reclaim() 看的就是它。
+	 */
+	struct mem_cgroup *target_mem_cgroup;
+
+	/*
+	 * 匿名侧的回收代价，给经典路径的扫描比例用。
+	 * prepare_scan_control() 从 lruvec->cost[] 填进来。
+	 */
+	unsigned long	anon_cost;
+	/*
+	 * 文件侧的回收代价。同上。
+	 */
+	unsigned long	file_cost;
+
+	/*
+	 * 用户态主动回收带来的 swappiness 指针。
+	 * 读的时候走 sc_swappiness()（vmscan.c:203），不要直接解引用。
+	 */
+	int *proactive_swappiness;
+
+	/*
+	 * 是否允许把 active 降到 inactive。
+	 * DEACTIVATE_ANON 是 1，DEACTIVATE_FILE 是 2。
+	 */
+#define DEACTIVATE_ANON 1
+#define DEACTIVATE_FILE 2
+	unsigned int may_deactivate:2;
+	unsigned int force_deactivate:1;	/* 强制两侧都允许降级 */
+	unsigned int skipped_deactivate:1;	/* 本轮想降级但 may_deactivate 没允许，记一笔，调用者可以再决定 */
+
+	/*
+	 * 回收时能不能把脏页写出去。来自 zone_reclaim_mode 或 boost 回收。
+	 */
+	unsigned int may_writepage:1;
+
+	/*
+	 * 能不能 unmap 已经映射的 folio。来自 zone_reclaim_mode。
+	 */
+	unsigned int may_unmap:1;
+
+	/*
+	 * 能不能把匿名页换出去。来自 zone reclaim、boost、cgroup 限制。
+	 */
+	unsigned int may_swap:1;
+
+	unsigned int no_cache_trim_mode:1;	/* 不许打开 cache_trim_mode */
+	unsigned int cache_trim_mode_failed:1;	/* cache_trim_mode 至少失败过一次 */
+	unsigned int proactive:1;		/* 用户态主动回收（memory.reclaim 或 MGLRU debugfs 的 - 命令） */
+
+	/*
+	 * 已经因为 memory.low 跳过一轮、什么都没收回来，
+	 * 回来再扫受保护的内存，避免直接 OOM。
+	 */
+	unsigned int memcg_low_reclaim:1;
+	unsigned int memcg_low_skipped:1;	/* 这一轮有 memcg 因为 memory.low 被减轻或整组跳过 */
+	unsigned int memcg_full_walk:1;		/* 共享 cgroup 树的部分遍历失败，改扫整棵树 */
+
+	unsigned int hibernation_mode:1;	/* 休眠路径上的回收 */
+
+	/*
+	 * 某个 zone 已经有足够连续页，可以去 compact，不必再为高阶把缓存扫光。
+	 */
+	unsigned int compaction_ready:1;
+
+	/*
+	 * 当前 node 上有容易回收的冷文件页，先剪缓存、先别动匿名。
+	 */
+	unsigned int cache_trim_mode:1;
+
+	/*
+	 * 当前 node 的文件 folio 少到危险。经典路径会转去扫匿名，
+	 * 见 10-02-lru-classic.md 的 cache trap。
+	 */
+	unsigned int file_is_tiny:1;
+
+	unsigned int no_demotion:1;		/* 只丢弃，不向更慢的内存层迁移 */
+
+	s8 order;				/* 触发这次回收的分配阶 */
+
+	/*
+	 * 扫描强度。每次扫 total_size >> priority 页。
+	 * 优先级从 12 往下掉，扫的比例翻倍。
+	 */
+	s8 priority;
+
+	/*
+	 * 最高隔离到哪一档 zone。比它高的 zone 上的 folio 先跳过。
+	 */
+	s8 reclaim_idx;
+
+	/*
+	 * 这次回收上下文的 GFP。决定能不能 IO、能不能进文件系统。
+	 */
+	gfp_t gfp_mask;
+
+	unsigned long nr_scanned;		/* 已经扫过的 inactive 页数 */
+	unsigned long nr_reclaimed;		/* shrink_zones() 到目前为止放出的页数 */
+
+	/*
+	 * 这一轮的计数。匿名结构，没有单独的类型名。
+	 */
+	struct {
+		unsigned int dirty;		/* 遇到的脏页 */
+		unsigned int congested;	/* 拥塞 */
+		unsigned int writeback;	/* 写回中 */
+		unsigned int immediate;	/* 需要立刻处理 */
+		unsigned int taken;		/* 实际隔离的计数 */
+	} nr;
+
+	/*
+	 * 嵌在 scan_control 里，不是指针。成员见下。
+	 */
+	struct reclaim_state reclaim_state;
+};
+```
 
 `struct reclaim_state`（`include/linux/swap.h:146`）。注释：任务正在回收时，`current->reclaim_state` 指向这样一分。`shrink_node` 里用的是内嵌的那份，并通过 `set_task_reclaim_state`（`vmscan.c:273`）挂到 `current` 上，好让 slab 等 LRU 之外的释放能把页数加进来。
 
-| 成员 | 条件 | 中文 |
-|---|---|---|
-| `unsigned long reclaimed` | 始终 | LRU 回收之外放出的页。`flush_reclaim_state()`（`vmscan.c:289`）把它加进 `nr_reclaimed`。注释（`:292-296`）写明目前三类：slab 页、高端内存上从裁剪过的 inode 放下的干净文件页、XFS 放出的 buffer 页。这三类不能一律算进某一个 memcg，所以只在全局回收里计入 |
-| `struct lru_gen_mm_walk *mm_walk` | `CONFIG_LRU_GEN` | 这个线程正在做的页表遍历状态。MGLRU 老化用。成员在 [04](./10-04-mglru-design.md) |
+```c
+struct reclaim_state {
+	/*
+	 * LRU 回收之外放出的页。flush_reclaim_state()（vmscan.c:289）
+	 * 把它加进 nr_reclaimed。注释（:292-296）写明目前三类：slab 页、
+	 * 高端内存上从裁剪过的 inode 放下的干净文件页、XFS 放出的 buffer 页。
+	 * 这三类不能一律算进某一个 memcg，所以只在全局回收里计入。
+	 */
+	unsigned long reclaimed;
+#ifdef CONFIG_LRU_GEN
+	/*
+	 * 这个线程正在做的页表遍历状态。MGLRU 老化用。
+	 * 成员在 10-04-mglru-design.md。
+	 */
+	struct lru_gen_mm_walk *mm_walk;
+#endif
+};
+```
 
 `sc_swappiness`（`:203`）：主动回收且调用者给了 `proactive_swappiness` 时用那份，否则 `mem_cgroup_swappiness(memcg)`。全局默认 `vm_swappiness` 是 60（`:201`）。
 

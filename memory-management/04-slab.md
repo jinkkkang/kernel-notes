@@ -25,37 +25,76 @@
 
 ## 4.2 `struct kmem_cache` 全部成员（`mm/slab.h:240`）
 
-| 成员 | 条件 | 中文 |
-|---|---|---|
-| `struct slub_percpu_sheaves __percpu *cpu_sheaves` | 始终 | 每 CPU 的 sheaf 三指针。注释（`:296`）：每个 cache 的 `cpu_sheaves` 非 NULL，但启动期、boot cache、开了调试、或 `CONFIG_SLUB_TINY` 可能永远指着 `bootstrap_sheaf`。`cache_has_sheaves()`（`:302`）用 `sheaf_capacity` 判断是不是真 sheaf |
-| `slab_flags_t flags` | 始终 | `SLAB_*`：调试、redzone、cache 对齐、reclaim 等 |
-| `unsigned long min_partial` | 始终 | 每个节点至少留多少 partial slab，避免抖着向 buddy 要页 |
-| `unsigned int size` | 始终 | **含**元数据的对象步长。真正往前跳用它 |
-| `unsigned int object_size` | 始终 | **不含**元数据的对象大小，也就是调用者请求的大小 |
-| `struct reciprocal_value reciprocal_size` | 始终 | `size` 的倒数，用乘法代替除法算对象下标（`__obj_to_index`，`:335`） |
-| `unsigned int offset` | 始终 | 空闲指针在对象里的偏移。空闲对象把 next 指针塞在对象体内 |
-| `unsigned int sheaf_capacity` | 始终 | 一把 sheaf 能装多少对象。0 表示不用 sheaf 快路径 |
-| `struct kmem_cache_order_objects oo` | 始终 | 首选 slab order 和该 order 能放的对象数，压在一个 `unsigned int` 里（`kmem_cache_order_objects`，`:228`，唯一成员 `x`） |
-| `struct kmem_cache_order_objects min` | 始终 | 允许的最小 order/对象数。分配 slab 失败时可以降 |
-| `gfp_t allocflags` | 始终 | 向 buddy 要 slab 页时用的 GFP |
-| `int refcount` | 始终 | cache 被多少处引用。减到 0 才能 destroy。合并 cache 时会大于 1 |
-| `void (*ctor)(void *object)` | 始终 | 对象构造函数。只在对象第一次从新 slab 取出时调用，不是每次 alloc |
-| `unsigned int inuse` | 始终 | 元数据开始的偏移。对象可用区间是 `[0, inuse)` |
-| `unsigned int align` | 始终 | 对齐 |
-| `unsigned int red_left_pad` | 始终 | 左侧 redzone 填充。调试用，正常为 0 |
-| `const char *name` | 始终 | `/proc/slabinfo` 和 sysfs 里的名字。只用于显示 |
-| `struct list_head list` | 始终 | 挂到全局 cache 链表 |
-| `struct kobject kobj` | `CONFIG_SYSFS` | `/sys/kernel/slab/<name>` |
-| `unsigned long random` | `CONFIG_SLAB_FREELIST_HARDENED` | freelist 指针异或的随机数，防止伪造空闲链 |
-| `unsigned int remote_node_defrag_ratio` | `CONFIG_NUMA` | 多大比例从别的节点的 partial 拿，用来碎片整理。注释写 “Defragmentation by allocating from a remote node” |
-| `unsigned int *random_seq` | `CONFIG_SLAB_FREELIST_RANDOM` | 空闲对象弹出顺序的随机表 |
-| `struct kasan_cache kasan_info` | `CONFIG_KASAN_GENERIC` | KASAN 辅助 |
-| `unsigned int useroffset` | `CONFIG_HARDENED_USERCOPY` | 允许 `copy_from_user` 写到对象里的起点 |
-| `unsigned int usersize` | `CONFIG_HARDENED_USERCOPY` | 允许拷贝的长度 |
-| `struct kmem_cache_stats __percpu *cpu_stats` | `CONFIG_SLUB_STATS` | `slabinfo -A` / alloc 慢路径计数 |
-| `struct kmem_cache_per_node_ptrs per_node[MAX_NUMNODES]` | 始终 | 每节点两个指针：`barn` 和 `node`（`kmem_cache_node`） |
+```c
+struct kmem_cache {
+	/*
+	 * 每 CPU 的 sheaf 三指针。每个 cache 的 cpu_sheaves 非 NULL，
+	 * 但启动期、boot cache、开了调试、或 CONFIG_SLUB_TINY
+	 * 可能永远指着 bootstrap_sheaf。cache_has_sheaves()
+	 * 用 sheaf_capacity 判断是不是真 sheaf。
+	 */
+	struct slub_percpu_sheaves __percpu *cpu_sheaves;
+	slab_flags_t flags;		/* SLAB_*：调试、redzone、cache 对齐、reclaim 等 */
+	unsigned long min_partial;	/* 每节点至少留多少 partial slab，避免抖着向 buddy 要页 */
+	unsigned int size;		/* 含元数据的步长，真正往前跳用它 */
+	unsigned int object_size;	/* 不含元数据，也就是调用者请求的大小 */
+	struct reciprocal_value reciprocal_size; /* size 的倒数，乘法代替除法算下标 */
+	unsigned int offset;		/* 空闲对象把 next 指针塞在体内的偏移 */
+	unsigned int sheaf_capacity;	/* 一把能装多少对象，0 表示不用快路径 */
+	struct kmem_cache_order_objects oo; /* 首选 order 和对象数，压在 unsigned int x 里 */
+	struct kmem_cache_order_objects min; /* 允许的最小 order 和对象数，失败时可以降 */
+	gfp_t allocflags;		/* 向 buddy 要 slab 页时用的 GFP */
+	/*
+	 * cache 被多少处引用。减到 0 才能 destroy。合并时会大于 1。
+	 */
+	int refcount;
+	/*
+	 * 对象构造函数。只在第一次从新 slab 取出时调用，不是每次 alloc。
+	 */
+	void (*ctor)(void *object);
+	unsigned int inuse;		/* 元数据起点，对象可用区间是 [0, inuse) */
+	unsigned int align;		/* 对齐 */
+	unsigned int red_left_pad;	/* 左侧 redzone 填充，调试用，正常为 0 */
+	const char *name;		/* slabinfo 和 sysfs 的名字，只用于显示 */
+	struct list_head list;		/* 挂到全局 cache 链表 */
+#ifdef CONFIG_SYSFS
+	struct kobject kobj;		/* /sys/kernel/slab/<name> */
+#endif
+#ifdef CONFIG_SLAB_FREELIST_HARDENED
+	unsigned long random;		/* freelist 指针异或的随机数，防止伪造空闲链 */
+#endif
+#ifdef CONFIG_NUMA
+	/*
+	 * 多大比例从别的节点的 partial 拿，用来碎片整理。
+	 */
+	unsigned int remote_node_defrag_ratio;
+#endif
+#ifdef CONFIG_SLAB_FREELIST_RANDOM
+	unsigned int *random_seq;	/* 空闲对象弹出顺序的随机表 */
+#endif
+#ifdef CONFIG_KASAN_GENERIC
+	struct kasan_cache kasan_info;	/* KASAN 辅助 */
+#endif
+#ifdef CONFIG_HARDENED_USERCOPY
+	unsigned int useroffset;	/* 允许 copy_from_user 写到对象里的起点 */
+	unsigned int usersize;		/* 允许拷贝的长度 */
+#endif
+#ifdef CONFIG_SLUB_STATS
+	struct kmem_cache_stats __percpu *cpu_stats; /* slabinfo -A 和 alloc 慢路径计数 */
+#endif
+	/* 每节点两个指针：barn 和 node（kmem_cache_node） */
+	struct kmem_cache_per_node_ptrs per_node[MAX_NUMNODES];
+};
+```
 
-`kmem_cache_per_node_ptrs`（`:232`）：`struct node_barn *barn`，`struct kmem_cache_node *node`。
+`kmem_cache_per_node_ptrs`（`slab.h:232`）：
+
+```c
+struct kmem_cache_per_node_ptrs {
+	struct node_barn *barn;		/* 本节点的 sheaf 仓库 */
+	struct kmem_cache_node *node;	/* 本节点的 partial / full */
+};
+```
 
 ---
 
@@ -63,65 +102,139 @@
 
 `struct slub_percpu_sheaves`（`slub.c:447`）：
 
-| 成员 | 中文 |
-|---|---|
-| `local_trylock_t lock` | 本 CPU sheaf 的锁。分配热路径用 trylock，失败就当慢路径 |
-| `struct slab_sheaf *main` | 当前这把。未加锁时不为 NULL |
-| `struct slab_sheaf *spare` | 备用：要么空要么满，可以是 NULL。main 空了就和它换 |
-| `struct slab_sheaf *rcu_free` | 攒 `kfree_rcu` 的一把 |
+```c
+struct slub_percpu_sheaves {
+	/*
+	 * 本 CPU sheaf 的锁。分配热路径用 trylock，失败就当慢路径。
+	 */
+	local_trylock_t lock;
+	struct slab_sheaf *main;	/* 当前这把，未加锁时不为 NULL */
+	/*
+	 * 备用：要么空要么满，可以是 NULL。main 空了就和它换。
+	 */
+	struct slab_sheaf *spare;
+	struct slab_sheaf *rcu_free;	/* 攒 kfree_rcu 的一把 */
+};
+```
 
 `struct slab_sheaf`（`:429`）：
 
-| 成员 | 中文 |
-|---|---|
-| `struct rcu_head rcu_head` | 与下面几项同 union。延迟释放 |
-| `struct list_head barn_list` | 挂在 barn 的满链或空链上 |
-| `struct llist_node llnode` | 不确定上下文里推迟 `call_rcu` |
-| `unsigned int capacity` | 仅 prefilled sheaf 使用 |
-| `bool pfmemalloc` | 这把里的对象来自 PFMEMALLOC 水位以下，归还时要记住 |
-| `struct kmem_cache *cache` | 属于哪个 cache |
-| `unsigned int size` | 当前装了多少对象 |
-| `int node` | 只给 rcu sheaf 用的节点号 |
-| `void *objects[]` | 柔性数组，对象指针 |
+```c
+struct slab_sheaf {
+	union {
+		struct rcu_head rcu_head;	/* 延迟释放 */
+		struct list_head barn_list;	/* 挂在 barn 的满链或空链上 */
+		/* 不确定上下文里推迟 call_rcu */
+		struct llist_node llnode;
+		/* 仅 prefilled sheaf 使用 */
+		struct {
+			unsigned int capacity;
+			/*
+			 * 这把里的对象来自 PFMEMALLOC 水位以下，归还时要记住。
+			 */
+			bool pfmemalloc;
+		};
+	};
+	struct kmem_cache *cache;	/* 属于哪个 cache */
+	unsigned int size;		/* 当前装了多少对象 */
+	int node;			/* 只给 rcu sheaf 用的节点号 */
+	void *objects[];		/* 柔性数组，对象指针 */
+};
+```
 
-`struct node_barn`（`:421`）：`spinlock_t lock`，`sheaves_full`，`sheaves_empty`，`nr_full`，`nr_empty`。满链和空链各自最多留 `MAX_FULL_SHEAVES` / `MAX_EMPTY_SHEAVES`（都是 10，`:418`）。多出来的会拆回 slab。
+`struct node_barn`（`:421`）：
+
+```c
+struct node_barn {
+	spinlock_t lock;		/* 保护满链、空链和下面两个计数 */
+	struct list_head sheaves_full;	/* 满捆 */
+	struct list_head sheaves_empty;	/* 空捆 */
+	unsigned int nr_full;		/* 满链上的捆数 */
+	unsigned int nr_empty;		/* 空链上的捆数 */
+};
+```
+
+满链和空链各自最多留 `MAX_FULL_SHEAVES` / `MAX_EMPTY_SHEAVES`（都是 10，`:418`）。多出来的会拆回 slab。
 
 `struct kmem_cache_node`（`:457`）：
 
-| 成员 | 条件 | 中文 |
-|---|---|---|
-| `spinlock_t list_lock` | 始终 | 保护 partial / full |
-| `unsigned long nr_partial` | 始终 | partial slab 个数 |
-| `struct list_head partial` | 始终 | 部分使用的 slab |
-| `atomic_long_t nr_slabs` | `CONFIG_SLUB_DEBUG` | slab 数 |
-| `atomic_long_t total_objects` | `CONFIG_SLUB_DEBUG` | 对象总数 |
-| `struct list_head full` | `CONFIG_SLUB_DEBUG` | 完全用满的 slab。非调试构建不保留这条链，满了就从 partial 摘掉，靠对象里的 freelist 指针自己找回来 |
+```c
+struct kmem_cache_node {
+	spinlock_t list_lock;		/* 保护 partial / full */
+	unsigned long nr_partial;	/* partial slab 个数 */
+	struct list_head partial;	/* 部分使用的 slab */
+#ifdef CONFIG_SLUB_DEBUG
+	atomic_long_t nr_slabs;		/* slab 数 */
+	atomic_long_t total_objects;	/* 对象总数 */
+	/*
+	 * 完全用满的 slab。非调试构建不保留这条链，
+	 * 满了就从 partial 摘掉，靠对象里的 freelist 指针自己找回来。
+	 */
+	struct list_head full;
+#endif
+};
+```
 
 `struct slab`（`slab.h:116`）：
 
-| 成员 | 条件 | 中文 |
-|---|---|---|
-| `memdesc_flags_t flags` | 始终 | 与 `page->flags` 重叠 |
-| `struct kmem_cache *slab_cache` | 始终 | 属于哪个 cache。与 `page` 的 `compound_info` 重叠 |
-| `struct list_head slab_list` | 始终 | 挂 partial 或 full |
-| `struct freelist_counters` | 匿名嵌在 union 里 | 见下。注释要求落在双字边界上 |
-| `struct rcu_head rcu_head` | 与上面同 union | RCU 释放 slab |
-| `unsigned int __page_type` | 始终 | 与 page 的类型字重叠 |
-| `atomic_t __page_refcount` | 始终 | 与 `page->_refcount` 重叠 |
-| `unsigned long obj_exts` | `CONFIG_SLAB_OBJ_EXT` | 每对象扩展（memcg objcg、alloc tag） |
+```c
+struct slab {
+	memdesc_flags_t flags;			/* 与 page->flags 重叠 */
+
+	struct kmem_cache *slab_cache;		/* 属于哪个 cache，与 compound_info 重叠 */
+	union {
+		struct {
+			struct list_head slab_list;	/* 挂 partial 或 full */
+			/*
+			 * 双字边界。空闲指针和计数匿名嵌在这里。
+			 */
+			struct freelist_counters;
+		};
+		struct rcu_head rcu_head;	/* RCU 释放 slab */
+	};
+
+	unsigned int __page_type;		/* 与 page 的类型字重叠 */
+	atomic_t __page_refcount;		/* 与 page->_refcount 重叠 */
+#ifdef CONFIG_SLAB_OBJ_EXT
+	unsigned long obj_exts;			/* 每对象扩展：memcg objcg、alloc tag */
+#endif
+};
+```
 
 `struct freelist_counters`（`slab.h:82`）：
 
-| 成员 | 条件 | 中文 |
-|---|---|---|
-| `void *freelist` | 始终 | 下一个空闲对象 |
-| `unsigned long counters` | 与下面的位域同 union | 把计数当成一个字做 cmpxchg |
-| `unsigned inuse:16` | 位域 | 已分配对象数 |
-| `unsigned objects:15` | 位域 | slab 里对象总数 |
-| `unsigned frozen:1` | 位域 | slab 正被某 CPU 独占。调试时这个 bit 也可表示 slab 已损坏 |
-| `unsigned obj_exts_in_object:1` | `CONFIG_64BIT` | 对象扩展塞在对象体内 |
-| `unsigned obj_exts_needs_objcg:1` | `CONFIG_64BIT` | 需要 objcg |
-| `freelist_full_t freelist_counters` | `system_has_freelist_aba` | 128 位（64 位机）或 64 位的整体，一次 cmpxchg，避免 freelist 指针 ABA |
+```c
+struct freelist_counters {
+	union {
+		struct {
+			void *freelist;		/* 下一个空闲对象 */
+			union {
+				unsigned long counters;	/* 把计数当成一个字做 cmpxchg */
+				struct {
+					unsigned inuse:16;	/* 已分配对象数 */
+					unsigned objects:15;	/* slab 里对象总数 */
+					/*
+					 * slab 正被某 CPU 独占。
+					 * 调试时这个 bit 也可表示 slab 已损坏。
+					 */
+					unsigned frozen:1;
+#ifdef CONFIG_64BIT
+					unsigned obj_exts_in_object:1;	/* 对象扩展塞在对象体内 */
+					unsigned obj_exts_needs_objcg:1; /* 需要 objcg */
+#endif
+				};
+			};
+		};
+#ifdef system_has_freelist_aba
+		/*
+		 * 128 位（64 位机）或 64 位的整体，一次 cmpxchg，
+		 * 避免 freelist 指针 ABA。
+		 */
+		freelist_full_t freelist_counters;
+#endif
+	};
+};
+```
 
 ---
 
@@ -221,21 +334,35 @@ sudo rmmod kmod_slab_cache
 
 `struct page_frag`（`:36`）是「已经切出来的一块」：
 
-| 成员 | 条件 | 中文 |
-|---|---|---|
-| `struct page *page` | 始终 | 这块所在的页 |
-| `__u32 offset` | `BITS_PER_LONG > 32` 或 `PAGE_SIZE >= 65536` | 页内偏移 |
-| `__u32 size` | 同上 | 这块的长度 |
-| `__u16 offset` / `__u16 size` | 其余配置 | 同一对字段，窄一点 |
+```c
+struct page_frag {
+	struct page *page;		/* 这块所在的页 */
+#if (BITS_PER_LONG > 32) || (PAGE_SIZE >= 65536)
+	__u32 offset;			/* 页内偏移 */
+	__u32 size;			/* 这块的长度 */
+#else
+	__u16 offset;			/* 页内偏移 */
+	__u16 size;			/* 这块的长度 */
+#endif
+};
+```
 
 `struct page_frag_cache`（`:49`）是分配游标，挂在任务或 per-CPU 上：
 
-| 成员 | 条件 | 中文 |
-|---|---|---|
-| `unsigned long encoded_page` | 始终 | 虚拟地址、pfmemalloc 位、order 挤在一个字里 |
-| `__u16 offset` | `PAGE_SIZE < PAGE_FRAG_CACHE_MAX_SIZE` 且 `BITS_PER_LONG <= 32` | 下一块从哪切 |
-| `__u16 pagecnt_bias` | 同上 | 还没从 `_refcount` 里扣掉的预支引用 |
-| `__u32 offset` / `__u32 pagecnt_bias` | 其余配置 | 同上，宽一点 |
+```c
+struct page_frag_cache {
+	/* 虚拟地址、pfmemalloc 位、order 挤在一个字里 */
+	unsigned long encoded_page;
+
+#if (PAGE_SIZE < PAGE_FRAG_CACHE_MAX_SIZE) && (BITS_PER_LONG <= 32)
+	__u16 offset;			/* 下一块从哪切 */
+	__u16 pagecnt_bias;		/* 还没从 _refcount 里扣掉的预支引用 */
+#else
+	__u32 offset;			/* 下一块从哪切 */
+	__u32 pagecnt_bias;		/* 还没从 _refcount 里扣掉的预支引用 */
+#endif
+};
+```
 
 `PAGE_FRAG_CACHE_MAX_SIZE`（`:47`）把 32768 按页对齐。`PAGE_FRAG_CACHE_MAX_ORDER` 是这个尺寸的阶。
 
