@@ -95,7 +95,7 @@ rmqueue                               # page_alloc.c:3413
 
 拆页在 `__rmqueue_smallest` 里完成：高阶块一切二，另一半挂回 `free_area[order]`。归还时的合并在 [05](./03-05-buddy-free.md) 的 `__free_one_page`。
 
-`set_buddy_order` 把 order 写进 `page->private`。这就是 [02 物理布局](./02-physical-layout.md) 里 `private` 在 `PageBuddy` 时的含义。
+`set_buddy_order` 把 order 写进 `page->private`。这就是 [02 物理布局](./02-physical-layout.md) 里 `private` 在 `PageBuddy` 时的含义。阶和拆分的图在 [02 §2.5](./02-physical-layout.md#25-buddy-概念)。
 
 `reserve_highatomic_pageblock`（`:3447`）给原子高阶分配留 pageblock，大约占 zone 的 1%。压力大时 `unreserve_highatomic_pageblock`（`:3496`）会吐出来。这块保留是高阶失败的原因之一，见 [07](./03-07-high-order-and-compaction.md)。
 

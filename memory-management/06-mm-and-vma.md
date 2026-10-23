@@ -437,7 +437,7 @@ start-end perm offset dev inode pathname
 | p4d | `p4d_index`，`arch/x86/include/asm/pgtable.h:1099`，`>> P4D_SHIFT`（39） | 一条 P4D 盖 512GB。4 级时 `PTRS_PER_P4D == 1`，下标恒为 0 |
 | pgd | `pgd_index`，`pgtable.h:71`，`>> PGDIR_SHIFT` | 4 级时 shift 是 39，一条 PGD 盖 512GB；5 级时 shift 是 48，一条盖 256TB |
 
-`PTRS_PER_PGD/PUD/PMD/PTE` 在 x86-64 都是 512（`arch/x86/include/asm/pgtable_64_types.h:51-80`）。4 级用户空间约 128TB（`__VIRTUAL_MASK_SHIFT` 47），5 级约 64PB（shift 56）。布局表在 [02](./02-physical-layout.md) 的 2.7，这里只讲级。
+`PTRS_PER_PGD/PUD/PMD/PTE` 在 x86-64 都是 512（`arch/x86/include/asm/pgtable_64_types.h:51-80`）。4 级用户空间约 128TB（`__VIRTUAL_MASK_SHIFT` 47），5 级约 64PB（shift 56）。布局表在 [02](./02-physical-layout.md) 的 2.8，这里只讲级。
 
 `pgdir_shift` 和 `ptrs_per_p4d` 是运行时变量，不是常量。默认值在 `arch/x86/kernel/head64.c:56-59`：`pgdir_shift = 39`，`ptrs_per_p4d = 1`，`__pgtable_l5_enabled = 0`。解压阶段如果 CPUID leaf 7 的 bit 16（LA57）在、命令行又没有 `no5lvl`，`arch/x86/boot/compressed/pgtable_64.c:122-129` 把三者改成 1 / 48 / 512。已经在 5 级模式里启动时，`arch/x86/boot/startup/map_kernel.c:26-28` 再写一遍。
 

@@ -1,11 +1,53 @@
-# 2. 物理布局：page / folio / node / zone / sparsemem
+# 2. 物理布局：page / folio / node / zone / buddy / sparsemem
 
-**结论**：每一页物理内存有一个 `struct page`；用户和页缓存看到的分配单位是 `folio`（可以是一页或多页）。页按 NUMA node（`pg_data_t`）再按 `zone` 分组。x86-64 默认用 sparsemem vmemmap：`mem_section` 指向 memmap，不是一整张平坦的 `mem_map[]`。
+**结论**：每一页物理内存有一个 `struct page`；用户和页缓存看到的分配单位是 `folio`（可以是一页或多页）。页按 NUMA node（`pg_data_t`）再按 `zone` 分组。每个 zone 用 buddy 管空闲页：`free_area[order]` 上挂着 `2^order` 页的空闲块，PCP 是它前面的每 CPU 缓存。x86-64 默认用 sparsemem vmemmap 存放这些 `struct page`。启动早期的账在 memblock，`memblock_free_all` 之后空闲页才出现在 buddy 链表上。这一章给布局名词和 buddy 的拆/合概念；`rmqueue` 与 `__free_one_page` 的调用链在 [页分配](./03-00-page-alloc.md)。
 
 > 定义：`include/linux/mm_types.h`、`include/linux/mmzone.h`。v7.3 `c03c1a14507d`。
 > 导航：[上一节 总览](./01-overview.md) · [目录](./README.md) · [下一节 页分配](./03-00-page-alloc.md)
 
-`memdesc_flags_t`（`mm_types.h:39`）只是包了一层 `unsigned long f`。v7.3 的 `page->flags` 不再是裸 `unsigned long`，nid / zone / section 从这层 flags 里拆（`memdesc_nid`、`memdesc_zonenum`、`memdesc_section`，见 `mm.h` / `mmzone.h`）。
+## 2.0 全貌
+
+先把后面要碰到的名词排成阅读顺序，再进入结构体。
+
+**node** 是拓扑。一台机器有一个或多个 NUMA node，`pg_data_t` 代表其中一个：这段物理内存离哪组 CPU 近。**zone** 是这个 node 里一段可以拿来分配的范围（DMA、DMA32、NORMAL 这一类），水位和保留按 zone 算。**buddy** 是挂在 zone 下面的空闲页管家，空闲内存按 `2^order` 页一块，放进 `zone->free_area[order]`。**PCP** 是 buddy 前面的每 CPU 小缓存，单页和便宜的高阶先在这里周转，热路径少碰 `zone->lock`。**page / folio** 是页的身份证：`struct page` 每页一张，`folio` 是一次分配的那一整块。**sparsemem** 决定身份证放在哪：`mem_section` 指向 vmemmap 上的 `struct page` 数组。**memblock** 是 buddy 醒来之前的账本；`memblock_free_all` 把还没划走的页交进 buddy 之后，运行时的空闲链表才算数。
+
+```mermaid
+flowchart TD
+  machine["机器"] --> node["NUMA node<br/>pg_data_t"]
+  node --> zones["node_zones[]"]
+  node --> zlists["node_zonelists[]<br/>分配时的回退顺序"]
+  zones --> zone["struct zone"]
+  zlists --> zone
+  zone --> buddy["free_area[order]<br/>buddy 空闲块"]
+  zone --> pcp["per_cpu_pageset<br/>PCP"]
+  pcp --> buddy
+  buddy --> fpage["空闲头页<br/>free_list 上的 struct page"]
+  pcp --> ppage["还在 PCP lists 上的页"]
+  sec["sparsemem<br/>mem_section"] --> vmem["vmemmap<br/>struct page 数组"]
+  vmem -.-> fpage
+  mb["memblock<br/>启动早期账本"] -->|"memblock_free_all"| buddy
+```
+
+虚线表示 `struct page` 放在哪。memblock 那条箭头只在启动交接时走一次。
+
+本章后面的顺序：
+
+```text
+2.1–2.2  page / folio：身份证长什么样
+2.3–2.4  node / zone，以及 zone 上的 free_area、PCP 成员
+2.5      buddy 概念：阶、伙伴、拆、合、migratetype
+2.6      zonelist：一次分配允许走哪些 zone
+2.7      sparsemem：struct page 放在哪
+2.8      x86-64 虚拟布局，点到为止
+2.9      pfn_to_page 三种模型
+2.10     folio 的 refcount 与 mapcount
+2.11     memblock 怎么把页交给 buddy
+2.12     关键函数表
+```
+
+自检：一页现在没人用，它挂在哪个 node、哪个 zone 的哪条链表上？能指到 `node_zones[]` 里的某个 zone，并说出它在 `free_area[order]` 上还是在该 zone 的 PCP 上，这一节就读完了。阶、以及具体是哪一条 `free_list`，在 [2.5](#25-buddy-概念)。
+
+`memdesc_flags_t`（`mm_types.h:39`）只是包了一层 `unsigned long f`。v7.3 的 `page->flags` 不再是裸 `unsigned long`，nid / zone / section 从这层 flags 里拆（`memdesc_nid`、`memdesc_zonenum`、`memdesc_section`，见 `mm.h` / `mmzone.h`）。空闲页属于哪个 node、哪个 zone，就编码在这张身份证上。
 
 ---
 
@@ -379,7 +421,7 @@ struct folio {
 
 小 folio 不会去碰第二页以后的字段。把 order-0 folio 当成多页结构去写 `_deferred_list`，就是踩别的页的 `struct page`。
 
-上面的源码片段已经列全。`_refcount` 和 `_mapcount` 是两本账，get/put 规则见 [2.9](#29-folio-的-refcount-与-mapcount)。
+上面的源码片段已经列全。`_refcount` 和 `_mapcount` 是两本账，get/put 规则见 [2.10](#210-folio-的-refcount-与-mapcount)。
 
 ---
 
@@ -654,7 +696,7 @@ struct zone {
 	/*
 	 * buddy 本体。每个 order 一条。
 	 * NR_PAGE_ORDERS = MAX_PAGE_ORDER+1，默认 MAX_PAGE_ORDER 是 10
-	 * （mmzone.h:31），也就是 0..10。
+	 * （mmzone.h:31），也就是 0..10。阶、拆、合见 2.5。
 	 */
 	struct free_area free_area[NR_PAGE_ORDERS];
 #ifdef CONFIG_UNACCEPTED_MEMORY
@@ -713,7 +755,7 @@ struct zone {
 } ____cacheline_internodealigned_in_smp;
 ```
 
-`struct free_area`（`:195`）：
+`struct free_area`（`mmzone.h:195`）。更长的注释在 [2.5](#25-buddy-概念)。
 
 ```c
 struct free_area {
@@ -734,7 +776,7 @@ struct free_area {
 | `MIGRATE_CMA` | `CONFIG_CMA`。行为上模仿 ZONE_MOVABLE，分配器不会悄悄改这种 pageblock 的类型 |
 | `MIGRATE_ISOLATE` | `CONFIG_MEMORY_ISOLATION`。隔离中，不能从这里分 |
 
-能互相合并的只有 `< MIGRATE_PCPTYPES` 的类型（`migratetype_is_mergeable`，`:175`）。HIGHATOMIC、CMA、ISOLATE 不能跟普通块合并，这是外碎片的来源之一。
+能跟普通块合并的是 `< MIGRATE_PCPTYPES` 的类型（`migratetype_is_mergeable`，`:175`）。HIGHATOMIC、CMA、ISOLATE 守着自己的 pageblock。为什么要分这些类型，见 [2.5](#25-buddy-概念)。
 
 ### `struct per_cpu_pages`（`:844`）
 
@@ -769,7 +811,198 @@ struct per_cpu_pages {
 
 ---
 
-## 2.5 `struct zonelist` / `struct zoneref`
+## 2.5 buddy 概念
+
+**结论**：一页空闲内存在 buddy 里时，它是某个 `2^order` 连续块的头页。所在 zone 是 `page_zone(page)`（`mm.h:2620`）：`&NODE_DATA(page_to_nid(page))->node_zones[page_zonenum(page)]`。块挂在这个 zone 的 `free_area[order].free_list[migratetype]` 上，链表节点是 `page->buddy_list`。同阶没有空闲块时，分配从更高阶拆；释放时若伙伴也空闲，就往上合并。PCP 上的页还没进（或已经离开）这张表。`rmqueue` 怎么选 PCP 还是 buddy，在 [03-04-pcp-and-rmqueue.md](./03-04-pcp-and-rmqueue.md)；`__free_one_page` 怎么沿伙伴往上合，在 [03-05-buddy-free.md](./03-05-buddy-free.md)。
+
+### 阶：order *n* 是 2^n 页
+
+`order` 是连续页数的对数。order 0 是 1 页，order 1 是 2 页，order *n* 是 `1 << n` 页，而且这 `1 << n` 页的 PFN 连续、起始 PFN 按 `1 << n` 对齐。
+
+`MAX_PAGE_ORDER` 默认是 10（`mmzone.h:31`）。打开 `CONFIG_ARCH_FORCE_MAX_ORDER` 时改用那个配置值（`:30-34`）。`NR_PAGE_ORDERS` 是 `MAX_PAGE_ORDER + 1`（`:39`），所以 `zone->free_area[]` 的下标是 0 到 10，一共 11 档。合并停在 `MAX_PAGE_ORDER`：最大的空闲块是 order 10，没有 order 11。
+
+`PAGE_ALLOC_COSTLY_ORDER` 是 3（`:63`）。头文件把它定成「贵」的分界：比这低的阶，在正常回收压力下比较容易自己合回去；再往上就难（`:57-62`）。这是分界，buddy 的最大阶仍是 `MAX_PAGE_ORDER`。
+
+`PAGE_SHIFT` 来自 `CONFIG_PAGE_SHIFT`（`include/vdso/page.h:13`）。x86-64 的 `Documentation/filesystems/proc.rst` 把 page block 举例写成 2MB，对应下面 order 9 这一行，也就是一页 4KB。下表按 4KB 页估算：
+
+| order | 页数 `1 << order` | 4KB 页时 |
+|---|---|---|
+| 0 | 1 | 4KB |
+| 1 | 2 | 8KB |
+| 2 | 4 | 16KB |
+| 3 | 8 | 32KB，`PAGE_ALLOC_COSTLY_ORDER` |
+| 9 | 512 | 2MB，x86-64 上常见的 page block |
+| 10 | 1024 | 4MB，默认最大 buddy 块 |
+
+一块 order *n* 的头页 PFN 要能被 `1 << n` 整除。`__free_one_page` 里有一条 `VM_BUG_ON_PAGE(pfn & ((1 << order) - 1), page)`（`page_alloc.c:955`），调试配置下才触发。伙伴算法本身按这个对齐来配对：PFN 1 只作为 order 0 的头。
+
+### 空闲块挂在 `free_area` 上
+
+每个 zone 有一份 `free_area[NR_PAGE_ORDERS]`（`mmzone.h:1099`）。同一个阶的空闲块进同一个 `free_area`，再按迁移类型分链：
+
+```c
+/* include/linux/mmzone.h:195
+ * 一个 zone 有 free_area[NR_PAGE_ORDERS]，下标就是 order。
+ */
+struct free_area {
+	/*
+	 * 每种 migratetype 一条链。链上只有该阶空闲块的头页，
+	 * 用 page->buddy_list 串起来（和 lru、pcp_list 同占一个 union）。
+	 * 头页后面的 2^order - 1 页跟在连续 PFN 上，不再各挂一次。
+	 */
+	struct list_head	free_list[MIGRATE_TYPES];
+	unsigned long		nr_free; /* 本阶空闲块个数，各 migratetype 加总 */
+};
+```
+
+头页被 `set_buddy_order`（`page_alloc.c:714`）标成 buddy 页：`PageBuddy` 置上，阶写进 `page->private`。读阶用 `buddy_order`（`mm/page_alloc.h:106`），它就是 `page_private(page)`。这就是 [2.1](#21-struct-page-mm_typesh80) 里 `private` 在 `PageBuddy` 时的含义。
+
+摘下一块用 `get_page_from_free_area`（`page_alloc.c:873`）：从 `free_list[migratetype]` 取第一个 `buddy_list`。挂上去用 `__add_to_free_list`（`:794`），同时 `nr_free++`。保护这张表的是 `zone->lock`（上面 zone 结构里那把 `lock`）。
+
+所以 [2.0](#20-全貌) 的那一问，落到 buddy 上的答案是：
+
+```text
+page_zone(page)                          # mm.h:2620
+  = &NODE_DATA(page_to_nid(page))        # page_to_nid：mm.h:2400
+        ->node_zones[page_zonenum(page)] # page_zonenum：mmzone.h:1294
+  ->free_area[order].free_list[migratetype]
+        → 头页 page->buddy_list
+```
+
+nid 和 zone 都从 `page->flags` 拆出来（章首的 `memdesc_nid` / `memdesc_zonenum`）。页还在 PCP 上时，改看下面「PCP 在哪一层」，它不在 `free_area` 里。
+
+### 伙伴：同一阶，PFN 差 `1 << order`
+
+两块能配成伙伴，要阶相同，而且 PFN 相差正好 `1 << order`。差这一位，异或就能从一块跳到另一块：
+
+```c
+/* mm/page_alloc.h:176。order 0 时相邻的偶数/奇数 PFN 互为伙伴 */
+static inline unsigned long
+__find_buddy_pfn(unsigned long page_pfn, unsigned int order)
+{
+	return page_pfn ^ (1 << order);
+}
+```
+
+头文件里的例子（`:166-168`）：order 1、起始 PFN 8，伙伴是 `8 ^ (1 << 1) = 10`。8 和 10 各是 2 页，合起来是从 PFN 8 起的 4 页。合完的块取对齐的低地址，注释写成 `P = B & ~(1 << O)`（`:170-172`），`__free_one_page` 里就是 `buddy_pfn & pfn`（`page_alloc.c:1005`）。
+
+伙伴是不是真能合，要过 `page_is_buddy`（`page_alloc.h:138`）这几关：伙伴在 buddy 里（`PageBuddy`，或者是 debug 的 guard 页）、阶和当前块相同、两者在同一个 zone。zone 比较放在最后，和源码注释一致（`:147-150`）。`find_buddy_page_pfn`（`:196`）先用上面的异或找到候选页，再跑这几关；有一关不过就返回 NULL。判据的源码在这个 inline 里。持锁把阶往上抬的循环在 [03-05](./03-05-buddy-free.md)。
+
+**释放时往上合。** 还回来的块若伙伴也空闲，就把伙伴从它那条 `free_list` 摘掉，阶加一，块地址改成两者里对齐的那个低地址，再试下一阶。循环条件是 `order < MAX_PAGE_ORDER`（`page_alloc.c:960`）。阶已经到 `pageblock_order` 时，类型不同、而且至少有一边 `migratetype_is_mergeable` 为假，就停止（`:972-984`）。类型相同可以继续合，CMA 和 CMA 也算。停下来之后 `set_buddy_order` 写下最终的阶，`__add_to_free_list` 挂回对应的 `free_area[order]`。guard 页、直接 compact 把块截走、挂链表头还是尾，都在 `__free_one_page` 里，见 [03-05](./03-05-buddy-free.md)。
+
+**分配时从高阶拆。** 目标阶的 `free_list` 是空的，就向更高的阶找（`__rmqueue_smallest`，`page_alloc.c:1901`，调用链在 [03-04](./03-04-pcp-and-rmqueue.md)）。找到一块之后，`expand` 把用不到的高半截挂回去，调用者拿走低半截：
+
+```c
+/* page_alloc.c:1720 起。进入时 size == 1 << high，page 指向整块的头 */
+while (high > low) {
+	high--;
+	size >>= 1;
+	/*
+	 * set_page_guard：debug guardpage 没开时直接返回 false
+	 * （mm.h 里 CONFIG_DEBUG_PAGEALLOC 那支）。普通路径走下面两行。
+	 * page[size] 是高半截的头页。
+	 */
+	if (set_page_guard(zone, &page[size], high))
+		continue;
+	__add_to_free_list(&page[size], zone, high, migratetype, false);
+	set_buddy_order(&page[size], high); /* 高半截自己成为这一阶的空闲块 */
+	nr_added += size;
+}
+/* 循环结束，page 仍指向最低那一截，阶已经降到 low，交给调用者 */
+```
+
+每拆一次，高半截变成伙伴，留在 buddy 里；低半截继续拆，直到阶等于请求。拆两次就是下面第一个例子。
+
+### 例：只要 1 页，手头只有 order 2
+
+请求 order 0。这条 migratetype 上 order 0 和 1 都没有块，order 2 有一块，PFN 0–3（4 页，起始对齐）。
+
+```text
+拆之前
+  free_area[2]:  [0 1 2 3]
+
+第一次，high 从 2 降到 1，size 从 4 变成 2
+  高半截 page[2] 挂上 free_area[1]
+  free_area[1]:  [2 3]
+  手里还拿着:    [0 1]
+
+第二次，high 从 1 降到 0，size 从 2 变成 1
+  高半截 page[1] 挂上 free_area[0]
+  free_area[1]:  [2 3]
+  free_area[0]:  [1]
+  分给调用者:    [0]
+```
+
+分出去的 PFN 0 清掉 `PageBuddy`，不再挂在 `free_list` 上。PFN 1 是它的 order 0 伙伴，PFN 2 是「PFN 0–1 这 2 页」的 order 1 伙伴。两条链上都只有头页。
+
+### 例：还回一页，伙伴也空闲就合并
+
+紧接着把 PFN 0 以 order 0 还回来。伙伴地址用 `pfn ^ (1 << order)`。
+
+```text
+order 0：0 ^ 1 = 1
+  PFN 1 在 free_area[0] 上，阶相同，同一个 zone
+  摘掉 PFN 1
+  合成的块从 0 & 1 = 0 起，阶变成 1
+
+order 1：0 ^ 2 = 2
+  PFN 2 在 free_area[1] 上，本身就是 order 1 的头（盖住 2 和 3）
+  摘掉 PFN 2
+  合成的块从 0 & 2 = 0 起，阶变成 2
+
+order 2：0 ^ 4 = 4
+  假设 PFN 4 正在使用，page_is_buddy 失败，停止
+
+挂回
+  free_area[2]:  [0 1 2 3]
+  头页 private = 2，PageBuddy 置上
+```
+
+两次合并把刚才拆开的三块（调用者手里的 1 页、order 0 的 PFN 1、order 1 的 PFN 2）收回成原来的 order 2。若 PFN 1 当时不空闲，第一次就停，PFN 0 自己挂到 `free_area[0]`。这两个例子的阶都低于 `pageblock_order`，上面「释放时往上合」里的 migratetype 检查不会插手。
+
+### 为什么要分 migratetype
+
+外碎片是：空闲页的总数够，但凑不齐一块高阶连续页。不可移动的内核页若散落在可移动的用户页中间，两边的空闲页就永远当不了伙伴。
+
+buddy 把「能不能挪走」记在 pageblock 上，同一种 pageblock 里的空闲块进同一条 `free_list`。一个 pageblock 有 `pageblock_nr_pages`（`1 << pageblock_order`）页，整段共用一个迁移类型（`include/linux/pageblock-flags.h:75`）。类型位图在 sparsemem 下放在 `mem_section` 的 `usage` 里，平坦内存模型下放在 `zone->pageblock_flags`（[2.4](#24-struct-zone-mmzoneh979)、[2.7](#27-sparsememstruct-mem_section)）。
+
+`pageblock_order` 按配置选（`pageblock-flags.h:47-71`）：hugetlb 页大小在编译期固定时是 `min(HUGETLB_PAGE_ORDER, PAGE_BLOCK_MAX_ORDER)`；没有 hugetlb、开了 THP 时是 `min(HPAGE_PMD_ORDER, PAGE_BLOCK_MAX_ORDER)`；两者都没有时就是 `PAGE_BLOCK_MAX_ORDER`。`CONFIG_HUGETLB_PAGE_SIZE_VARIABLE` 时它是运行时变量，`set_pageblock_order`（`mm/mm_init.c:1437`）把它收成不超过 `PAGE_BLOCK_MAX_ORDER` 的 `HUGETLB_PAGE_ORDER`。`PAGE_BLOCK_MAX_ORDER` 默认等于 `MAX_PAGE_ORDER`（`mmzone.h:41-43`）。x86-64 的 `PMD_SHIFT` 是 21（`arch/x86/include/asm/pgtable_64_types.h:74`），`HPAGE_PMD_ORDER` 是 `HPAGE_PMD_SHIFT - PAGE_SHIFT`（`include/linux/huge_mm.h:117`）。文档把 x86-64 上的 page block 举例写成 2MB（`Documentation/filesystems/proc.rst` 的 pagetypeinfo 一节）。
+
+枚举值的表在 [2.4](#24-struct-zone-mmzoneh979)。分工是：
+
+| 类型 | 放什么 | 和碎片的关系 |
+|---|---|---|
+| `MIGRATE_UNMOVABLE` | 页表、内核数据结构 | 挪不走。单独成段，避免钉死用户页之间的空隙 |
+| `MIGRATE_MOVABLE` | 匿名页、页缓存 | 可以迁移，回收或 compact 之后容易合成高阶块 |
+| `MIGRATE_RECLAIMABLE` | inode、dentry 一类 slab | 压力下可以丢掉，再把 pageblock 腾出来 |
+| `MIGRATE_PCPTYPES` | PCP 上的类型种数 | 值等于上面三种的个数。分配时不当成一种页 |
+| `MIGRATE_HIGHATOMIC` | 高阶原子分配的保留 | 等于 `MIGRATE_PCPTYPES`。没有回退链 |
+| `MIGRATE_CMA` | CMA 区，`CONFIG_CMA` | 只给可移动分配用。分配器不会悄悄改这种 pageblock 的类型 |
+| `MIGRATE_ISOLATE` | 热插拔、压缩隔离，`CONFIG_MEMORY_ISOLATION` | 隔离期间不从这里分 |
+
+`fallbacks[]`（`page_alloc.c:1933`）只给前三种排了借用顺序：自己的链空了，可以按这个顺序去认领别的类型的空 pageblock，或从里面偷页。认领和偷的函数是 `__rmqueue_claim`、`__rmqueue_steal`，步骤在 [03-04](./03-04-pcp-and-rmqueue.md)。偷一次，两种页就进了同一个 pageblock，下一次高阶分配更难合上。HIGHATOMIC、CMA、ISOLATE 没有这条 fallback。
+
+### PCP 在 buddy 前面
+
+PCP 是每个 CPU、每个 zone 一份的小缓存，指针在 `zone->per_cpu_pageset`。字段在 [2.4](#24-struct-zone-mmzoneh979) 的 `struct per_cpu_pages`，这里只讲它和 buddy 的位置。
+
+调用者要的阶被 `pcp_allowed_order`（`page_alloc.c:679`）允许时，先从本 CPU 的 `lists[]` 拿，用 `pcp->lock`，不拿 `zone->lock`。允许的范围是 order 0 到 `PAGE_ALLOC_COSTLY_ORDER`（含 3）；编了 `CONFIG_TRANSPARENT_HUGEPAGE` 再加 PMD 那一阶。单页分配走 order 0 那几条链，order 1 到 3 也会在 PCP 上停留。这个范围以外的阶直接找 buddy。
+
+链空了，按 `batch` 一次从 buddy 补一批，只拿一次 `zone->lock`。`count` 超过 `high`，再按 `batch` 倒回 buddy，倒的时候才做伙伴合并。补货、排空的函数名在 [03-04](./03-04-pcp-and-rmqueue.md) 和 [03-05](./03-05-buddy-free.md)。
+
+PCP 上的页用 `pcp_list`。从 buddy 补进 PCP 时，`page_del_and_expand` 里的 `account_freepages` 把 `NR_FREE_PAGES` 减掉（`page_alloc.c:1750`，计数函数在 `:776`）。用户把页还到 PCP 时，`free_frozen_page_commit`（`:2844`）只把页挂上 `lists[]`，不加 `NR_FREE_PAGES`；倒回 buddy 时才由 `__free_one_page`（`:958`）加回去。因此 PCP 上的页不在 `free_area` 里，也不在 `nr_free_pages` 里。
+
+### `/proc/buddyinfo` 就是 `free_area` 的脸
+
+`/proc/buddyinfo` 由 `frag_show_print` 打印（`mm/vmstat.c:1568`）。每一列是一个 order，从 0 到 `NR_PAGE_ORDERS - 1`，数字是 `zone->free_area[order].nr_free`：这一阶的空闲**块**个数，各种 migratetype 加在一起。页数等于这个数乘 `1 << order`。创建时权限是 `0444`（`:2312`）。读的时候不拿 `zone->lock`，源码用 `data_race` 标了这次无锁读（`:1575-1579`），拆合进行中可能和真实链表差一块。
+
+本机快照的读法和 DMA / DMA32 / Normal 三行在 [13.3](./13-observability.md)。高阶列是 0、低阶列有几千，是外碎片：空闲页还在，只是合成不了大块。
+
+要按迁移类型拆开，看 `/proc/pagetypeinfo`（`pagetypeinfo_show`，`vmstat.c:1726`）。它把每条 `free_list[mtype]` 走一遍，类型名字来自 `migratetype_names[]`（`page_alloc.c:262`）：`Unmovable`、`Movable`、`Reclaimable`、`HighAtomic`，配置打开时还有 `CMA`、`Isolate`。v7.3 里这个文件的权限是 `0400`（`vmstat.c:2313`）。本机快照读它是 `Permission denied`，数字不编，说明见 [13.4](./13-observability.md)。
+
+---
+
+## 2.6 `struct zonelist` / `struct zoneref`
 
 **结论**：一次分配先选定一条 zonelist，从首选 zone 往回退 zone 扫。`__GFP_THISNODE` 用没有回退的那条。
 
@@ -794,7 +1027,7 @@ struct zonelist {
 
 ---
 
-## 2.6 sparsemem：`struct mem_section`
+## 2.7 sparsemem：`struct mem_section`
 
 **结论**：x86-64 不用一张巨大的 `mem_map[]`。物理地址切成 section，每个 section 一个 `mem_section`，里面藏着该段 `struct page` 数组的地址。PFN → page 先找 section，再加偏移。
 
@@ -839,11 +1072,11 @@ struct mem_section {
 
 `CONFIG_SPARSEMEM_EXTREME` 时 `mem_section` 是二级指针（`:2048`），根的大小按页算：`SECTIONS_PER_ROOT = PAGE_SIZE / sizeof(struct mem_section)`。否则是二维数组。
 
-FLATMEM 的 `mem_map` 仍声明着（`:1443`），因为有的配置两边都编译到。x86-64 服务器看 sparsemem 就够。三种模型下 PFN 怎么变成 `struct page`，见 [2.8](#28-pfn_to_page三种模型)。
+FLATMEM 的 `mem_map` 仍声明着（`:1443`），因为有的配置两边都编译到。x86-64 服务器看 sparsemem 就够。三种模型下 PFN 怎么变成 `struct page`，见 [2.9](#29-pfn_to_page三种模型)。
 
 ---
 
-## 2.7 x86-64 虚拟布局（点到为止）
+## 2.8 x86-64 虚拟布局（点到为止）
 
 权威表在 `Documentation/arch/x86/x86_64/mm.rst`。4 级页表时和本章有关的几行：
 
@@ -864,11 +1097,11 @@ FLATMEM 的 `mem_map` 仍声明着（`:1443`），因为有的配置两边都编
 
 ---
 
-## 2.8 `pfn_to_page`：三种模型
+## 2.9 `pfn_to_page`：三种模型
 
 **结论**：`pfn_to_page` 不是一个函数。`include/asm-generic/memory_model.h:74` 把它定义成 `__pfn_to_page`，而 `__pfn_to_page` 按编译期的内存模型三选一。x86-64 服务器默认走 `CONFIG_SPARSEMEM_VMEMMAP`：PFN 就是 vmemmap 数组的下标。
 
-`struct mem_section` 的字段在 [2.6](#26-sparsememstruct-mem_section)，这里不重复。
+`struct mem_section` 的字段在 [2.7](#27-sparsememstruct-mem_section)，这里不重复。
 
 三种展开（同一文件，互斥）：
 
@@ -887,17 +1120,17 @@ FLATMEM 的 `mem_map` 仍声明着（`:1443`），因为有的配置两边都编
 })
 ```
 
-经典 SPARSEMEM 那条能成立，是因为 `section_mem_map` 存的不是数组起点，而是「数组地址减去该 section 的起始 PFN」（文件注释 `:50-52`）。加上 PFN 之后，section 内的偏移自动对齐。低位标志要用 `__section_mem_map_addr`（`mmzone.h:2112`）清掉，[2.6](#26-sparsememstruct-mem_section) 写过。
+经典 SPARSEMEM 那条能成立，是因为 `section_mem_map` 存的不是数组起点，而是「数组地址减去该 section 的起始 PFN」（文件注释 `:50-52`）。加上 PFN 之后，section 内的偏移自动对齐。低位标志要用 `__section_mem_map_addr`（`mmzone.h:2112`）清掉，[2.7](#27-sparsememstruct-mem_section) 写过。
 
 `page_to_pfn` 是反向的三条（`:19`、`:47`、`:54`）。带 `CONFIG_DEBUG_VIRTUAL` 时 `page_to_phys`（`:77`）会 `WARN_ON_ONCE(!pfn_valid)`。
 
 vmemmap 本身要先被填上页表。`vmemmap_populate_basepages`（`mm/sparse-vmemmap.c:296`）只是转去 `vmemmap_populate_range(..., order=-1)`，按 base page 把 `[start, end)` 这段 `struct page` 虚拟地址铺出来。大页映射走 `vmemmap_populate_hugepages`（同文件 `:404`）。HVO 是铺完之后再把 hugetlb 的尾部 `struct page` 指到同一份，见 [09](./09-thp-and-hugetlb.md)。
 
-x86-64 的 `vmemmap` 符号就是 `vmemmap_base` 上的那片（[2.7](#27-x86-64-虚拟布局点到为止)）。KASLR 会挪基址，公式不变：`page = vmemmap + pfn`。
+x86-64 的 `vmemmap` 符号就是 `vmemmap_base` 上的那片（[2.8](#28-x86-64-虚拟布局点到为止)）。KASLR 会挪基址，公式不变：`page = vmemmap + pfn`。
 
 ---
 
-## 2.9 folio 的 refcount 与 mapcount
+## 2.10 folio 的 refcount 与 mapcount
 
 **结论**：`folio` 是为了让「一次分配的那一整块」有一个句柄。order-0 时它和 `struct page` 重叠；高阶时头页代表整块，tail 不再各自算一笔分配。`_refcount` 回答「谁还抓着这块内存」，`_mapcount` 回答「有多少用户页表项指着它」。两本账不能互相代替。
 
@@ -944,7 +1177,7 @@ static inline int folio_mapcount(const struct folio *folio)
 
 ---
 
-## 2.10 memblock：buddy 醒来之前
+## 2.11 memblock：buddy 醒来之前
 
 **结论**：启动早期没有 buddy、没有 slab。可用内存和已保留内存都记在 `struct memblock` 里。内核自己的早期分配走 `memblock_phys_alloc_range` 这一类，从 `memory` 里挖、记进 `reserved`。buddy 接盘之后，这套表可以丢掉（`memblock_discard`），除非 `CONFIG_ARCH_KEEP_MEMBLOCK`。
 
@@ -999,6 +1232,8 @@ memblock_phys_alloc_range(size, align, start, end)   # memblock.c:1624
 
 它标了 `__init`。buddy 起来之后再调，就是用一张已经废弃或只读的表。运行时要连续物理页，走 CMA / `alloc_contig_pages`，见 [03-09-cma.md](./03-09-cma.md)。
 
+把 memblock 里还没划走的页交进 buddy 的是 `memblock_free_all`（`mm/memblock.c:2494`）。它下面的 `__free_pages_memory`（`:2329`）按对齐把一段 PFN 切成不超过 `MAX_PAGE_ORDER` 的块，再经 `memblock_free_pages`（`mm/mm_init.c:2409`）进 `__free_pages_core`（`mm/page_alloc.c:1600`）。`CONFIG_DEFERRED_STRUCT_PAGE_INIT` 下，`struct page` 还没初始化的 PFN 在 `memblock_free_pages` 里直接返回（`:2413-2417`），要等延迟初始化之后才进 buddy。交进去之后这些页怎么挂在 `free_area` 上，见 [2.5](#25-buddy-概念)。
+
 ### KHO scratch
 
 Kexec HandOver（`Documentation/admin-guide/mm/kho.rst`）要跨 kexec 保住一块内存。早期还不知道全部保留区，上一个内核留出 scratch，本内核早期只许从这块分。对应标志是 `MEMBLOCK_KHO_SCRATCH`，`memblock_mark_kho_scratch` / `memblock_clear_kho_scratch`（`memblock.h:161-162`）。
@@ -1007,11 +1242,13 @@ Kexec HandOver（`Documentation/admin-guide/mm/kho.rst`）要跨 kexec 保住一
 
 ---
 
-## 2.11 关键函数表
+## 2.12 关键函数表
 
 | 符号 | 位置 | 作用 |
 |---|---|---|
 | `page_zonenum` / `folio_zonenum` | `mmzone.h:1294` / `:1299` | 从 flags 取 zone |
+| `page_to_nid` | `mm.h:2400` | 从 flags 取 nid。内部是 `memdesc_nid` |
+| `page_zone` | `mm.h:2620` | nid + zone → 这页所属的 `struct zone` |
 | `memdesc_zonenum` | `mmzone.h:1286` | 同上，吃 `memdesc_flags_t *` |
 | `memdesc_nid` | `mm.h:2384` 一带 | 从 flags 取 nid |
 | `NODE_DATA` | `mmzone.h:1771` | nid → `pg_data_t` |
@@ -1028,6 +1265,12 @@ Kexec HandOver（`Documentation/admin-guide/mm/kho.rst`）要跨 kexec 保住一
 | `folio_try_get` | `page_ref.h:274` | 引用为 0 则失败 |
 | `folio_mapcount` | `mm.h:1947` | 用户页表映射次数 |
 | `memblock_phys_alloc_range` | `mm/memblock.c:1624` | 早期物理分配 |
+| `memblock_free_all` | `mm/memblock.c:2494` | 把早期空闲页交给 buddy |
+| `memblock_free_pages` | `mm/mm_init.c:2409` | 一块 PFN 进 `__free_pages_core` |
+| `__find_buddy_pfn` | `mm/page_alloc.h:176` | 伙伴 PFN：`pfn ^ (1 << order)` |
+| `page_is_buddy` | `mm/page_alloc.h:138` | 阶、zone、`PageBuddy` 都对才合并 |
+| `set_buddy_order` | `mm/page_alloc.c:714` | 阶写入 `page->private`，置 `PageBuddy` |
+| `expand` | `mm/page_alloc.c:1714` | 高阶块拆开，高半截挂回 `free_area` |
 | `memblock_discard` | `memblock.h:119` 声明；`CONFIG_ARCH_KEEP_MEMBLOCK` 时 `:123` 是空的 inline | buddy 接盘后丢掉 memblock（未 KEEP 时） |
 | `kho_preserve_folio` | `kernel/liveupdate/kexec_handover.c:1147` | KHO 保住一个 folio |
 
