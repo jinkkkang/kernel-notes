@@ -1,204 +1,365 @@
 # 3. EEVDF：选谁跑
 
-**结论**：v7.3 的 fair 类已是 **EEVDF（Earliest Eligible Virtual Deadline First）**，不再是「单纯比 `vruntime` 谁小」。可跑集合里先筛 **eligible（内核欠它服务）**，再在合格者中取 **虚拟 deadline 最早** 的那个。树按 deadline 排序，并用子树 `min_vruntime` 做合格性剪枝，所以是 O(log n)。
+**结论**：v6.6.160 的 fair 类是 **EEVDF（Earliest Eligible Virtual Deadline First）**。可跑集合里先筛 **eligible（内核欠它服务，lag ≥ 0）**，再在合格者中取 **虚拟 deadline 最早** 的那个。红黑树仍按 **`vruntime`** 排序；每个节点额外存 `min_deadline`（自己和左右子树里最早的 deadline），所以找最早合格 deadline 是 O(log n)。
 
 > 主文件：`kernel/sched/fair.c`  
-> 关键符号：`avg_vruntime` `:749`、`entity_eligible` `:967`、`pick_eevdf` `:1187`、`update_deadline` `:1289`、`update_curr` `:2223`、`place_entity` `:6383`
+> 关键符号：`avg_vruntime` `:671`、`entity_eligible` `:744`、`__pick_eevdf` `:881`、`pick_eevdf` `:975`、`update_deadline` `:1025`、`update_curr` `:1201`、`place_entity` `:5194`
 
 ---
 
-## 3.1 从 CFS 到 EEVDF（直觉）
+## 3.1 四个量（先把词记住）
 
-| 旧 CFS 口头禅 | EEVDF 口头禅 |
-|---|---|
-| 谁 `vruntime` 小谁优先 | 谁 **既 eligible 又 deadline 最早** 谁优先 |
-| 用 min_vruntime 做基准 | 用加权平均虚拟时间 **V**（`avg_vruntime`）做基准 |
-| nice → 权重 → vruntime 斜率 | 仍然：权重影响虚拟时间斜率；**slice** 影响 deadline 远近 |
-
-核心量（实体 `sched_entity`）：
+实体 `sched_entity` 上：
 
 | 量 | 含义 |
 |---|---|
-| `vruntime` (ve) | 虚拟已执行进度 |
-| `deadline` (vd) | 虚拟截止：`vd ≈ ve + r/w`（见 `update_deadline`） |
-| `slice` (r) | 本次「请求」时长，默认 `sysctl_sched_base_slice` |
-| `vlag` | 出队时记住的 virtual lag，入队 `place_entity` 用来摆位置 |
-| `vprot` | 保护量子，避免刚上 CPU 立刻被抢（`protect_slice`） |
+| `vruntime`（ve） | 虚拟已执行进度。权重越大，同样的墙上时间加得越少 |
+| `deadline`（vd） | 虚拟截止。请求没吃完时 `vd = ve + r/w` |
+| `slice`（r） | 这次「请求」的墙上长度。变量 `sysctl_sched_base_slice`，默认 700000 纳秒（0.7 ms），启动时按在线 CPU 数放大 |
+| `vlag` | 出队时记下的虚拟 lag（`V - v_i`）。入队 `place_entity` 用它把实体放回欠账的位置 |
+
+权重怎么把墙上时间变成虚拟时间：`calc_delta_fair`（`fair.c:311`）。nice 0 的权重是 `NICE_0_LOAD` 时，虚拟增量就等于墙上增量；更重的任务虚拟时间涨得更慢。
+
+`slice` 的用户态旋钮不在 `/proc/sys`，而在 debugfs：`/sys/kernel/debug/sched/base_slice_ns`（`kernel/sched/debug.c:350`，要 `CONFIG_SCHED_DEBUG`）。变量名仍叫 `sysctl_sched_base_slice`（`fair.c:78`）。`sched_init_granularity`（`:244`）用 `1 + ilog2(在线 CPU 数)`（最多按 8 个 CPU）乘上 700000。
+
+和选人有关的 `sched_feat` 在 `kernel/sched/features.h`，运行时看 `/sys/kernel/debug/sched/features`：
+
+| 特性 | 默认 | 干什么 |
+|---|---|---|
+| `PLACE_LAG` | 开 | 睡眠再醒时保住 lag，别一入队就被平均吃掉 |
+| `PLACE_DEADLINE_INITIAL` | 开 | 新任务第一次入队只给半片 slice，好插进已经跑到一半的队伍 |
+| `RUN_TO_PARITY` | 开 | 选中之后尽量跑完这一片，直到不再 eligible 或领了新 slice |
+| `NEXT_BUDDY` | **关** | 醒了却没抢到 CPU 的任务，下次优先看看它。动的是延迟，不是长期公平 |
+| `WAKEUP_PREEMPTION` | 开 | 唤醒时允许抢占当前任务 |
 
 ---
 
 ## 3.2 平均虚拟时间 `avg_vruntime`
 
-`fair.c:749`（节选加注）：
+理想公平调度器里，每个实体的 lag 是 `lag_i = w_i * (V - v_i)`。`V` 是全体 `vruntime` 的加权平均。源码把 `V` 拆成零点加偏移（`fair.c:624` 附近的注释）：
+
+```text
+v0                 = cfs_rq->min_vruntime
+Σ (v_i - v0) * w_i = cfs_rq->avg_vruntime
+Σ w_i              = cfs_rq->avg_load
+```
+
+正在跑的 `curr` 不在红黑树上，所以这两个和里没有它。函数现算时再加回去：
 
 ```c
+/* fair.c:671 */
 u64 avg_vruntime(struct cfs_rq *cfs_rq)
 {
 	struct sched_entity *curr = cfs_rq->curr;
-	long weight = cfs_rq->sum_weight;
-	s64 delta = 0;
-	/* ... 把 curr 若 on_rq 也并入加权和 ... */
-	if (weight) {
-		s64 runtime = cfs_rq->sum_w_vruntime;
-		/* 中文：delta ≈ Σ w_i*(v_i - v0) / Σ w_i */
-		delta = div64_long(runtime, weight);
-	} else if (curr) {
-		delta = curr->vruntime - cfs_rq->zero_vruntime;
+	s64 avg = cfs_rq->avg_vruntime;
+	long load = cfs_rq->avg_load;
+
+	if (curr && curr->on_rq) {
+		unsigned long weight = scale_load_down(curr->load.weight);
+
+		avg += entity_key(cfs_rq, curr) * weight;
+		load += weight;
 	}
-	update_zero_vruntime(cfs_rq, delta);
-	return cfs_rq->zero_vruntime; /* 中文：返回更新后的 V（经 zero_vruntime） */
+
+	if (load) {
+		/* 负数时先减 (load - 1)，让除法朝 -∞ 取整，避免 V 偏大 */
+		if (avg < 0)
+			avg -= (load - 1);
+		avg = div_s64(avg, load);
+	}
+
+	return cfs_rq->min_vruntime + avg; /* 这就是 V */
 }
 ```
 
-`cfs_rq` 上缓存 `sum_w_vruntime` / `sum_weight` / `zero_vruntime`，避免每次从头扫树。
+`entity_key`（`:572`）就是 `se->vruntime - cfs_rq->min_vruntime`，用有符号差避免 u64 直接相乘溢出。
 
 ---
 
 ## 3.3 合格性 `entity_eligible`
 
-注释里的定义（约 `:910`）：**lag ≥ 0 ⇒ V ≥ v_i** —— 平均虚拟时间已经走到你前面（或持平），说明系统还「欠」你服务，你 eligible。
+注释里的定义（`fair.c:727`）：**lag ≥ 0 就是 V ≥ v_i**。平均虚拟时间已经走到你前面（或持平），说明系统还欠你服务，你 eligible。一个 `vruntime` 很大、跑在平均前面的任务（负 lag）不合格，CPU 让给落后的。
+
+除法会丢精度，所以比较时不先除，两边同乘权重（`:744`）：
 
 ```c
 int entity_eligible(struct cfs_rq *cfs_rq, struct sched_entity *se)
 {
-	return vruntime_eligible(cfs_rq, se->vruntime); /* :967 */
+	struct sched_entity *curr = cfs_rq->curr;
+	s64 avg = cfs_rq->avg_vruntime;
+	long load = cfs_rq->avg_load;
+
+	if (curr && curr->on_rq) {
+		unsigned long weight = scale_load_down(curr->load.weight);
+
+		avg += entity_key(cfs_rq, curr) * weight;
+		load += weight;
+	}
+
+	return avg >= entity_key(cfs_rq, se) * load;
 }
 ```
 
-`vruntime_eligible`（`:922`）用整数乘法比较，避免先做除法丢精度；64-bit 上还要小心 `__int128` / overflow。
-
-**读代码时别写反**：eligible ≠「vruntime 最小」；一个 vruntime 很大的任务若远远超前（负 lag），会被判不合格，把 CPU 让给落后的。
+出队前把 lag 夹紧再存进 `se->vlag`（`:710`、`:720`）。夹紧范围是 `±calc_delta_fair(max(2*slice, TICK_NSEC), se)`，避免加减任务把 `V` 晃得太厉害，让一个人的 lag 越积越大。
 
 ---
 
 ## 3.4 更新 deadline 与当前任务记账
 
-### `update_deadline`（`:1289`）
+### `update_deadline`（`:1025`）
+
+请求还没吃完（`vruntime` 仍小于 `deadline`）就直接返回。吃完了就领一片新的，并把 deadline 推到 `vruntime + 虚拟 slice`。队列里不只有自己时，调用 `resched_curr`，让当前任务尽快再参加一轮挑选。
 
 ```c
-static bool update_deadline(struct cfs_rq *cfs_rq, struct sched_entity *se)
+static void update_deadline(struct cfs_rq *cfs_rq, struct sched_entity *se)
 {
-	if (vruntime_cmp(se->vruntime, "<", se->deadline))
-		return false; /* 中文：还没吃完这一份请求 */
+	if ((s64)(se->vruntime - se->deadline) < 0)
+		return;
 
-	if (!se->custom_slice)
-		se->slice = sysctl_sched_base_slice;
+	/*
+	 * 虚拟时间的斜率由权重决定；
+	 * 请求长度 r 来自 sysctl_sched_base_slice。
+	 */
+	se->slice = sysctl_sched_base_slice;
 
-	/* 中文：vd_i = ve_i + r_i/w_i （calc_delta_fair 把墙时钟 slice 映到虚拟域） */
+	/* vd_i = ve_i + r_i / w_i */
 	se->deadline = se->vruntime + calc_delta_fair(se->slice, se);
-	avg_vruntime(cfs_rq);
-	return true; /* 中文：请求耗尽 → 调用方应考虑 resched */
+
+	if (cfs_rq->nr_running > 1) {
+		resched_curr(rq_of(cfs_rq));
+		clear_buddies(cfs_rq, se);
+	}
 }
 ```
 
-### `update_curr`（`:2223`）
+### `update_curr`（`:1201`）
 
-每次 tick / 调度点推进当前实体：
+tick 和调度点都走这里，给正在跑的实体记一笔：
 
-1. `delta_exec = update_se(...)` 算实际跑了多久  
-2. `curr->vruntime += calc_delta_fair(delta_exec, curr)`  
-3. `resched = update_deadline(...)`  
-4. 若该 resched 或不再受 `protect_slice` 保护 → `resched_curr_lazy(rq)`
+```c
+static void update_curr(struct cfs_rq *cfs_rq)
+{
+	struct sched_entity *curr = cfs_rq->curr;
+	s64 delta_exec;
 
-组调度时 `update_curr_fair` 会 `for_each_sched_entity` 从叶子向上逐层 `update_curr`。
+	if (unlikely(!curr))
+		return;
+
+	delta_exec = update_curr_se(rq_of(cfs_rq), curr); /* 墙上跑了多久 */
+	if (unlikely(delta_exec <= 0))
+		return;
+
+	curr->vruntime += calc_delta_fair(delta_exec, curr);
+	update_deadline(cfs_rq, curr);
+	update_min_vruntime(cfs_rq);
+
+	if (entity_is_task(curr))
+		update_curr_task(task_of(curr), delta_exec); /* trace_sched_stat_runtime 等 */
+
+	account_cfs_rq_runtime(cfs_rq, delta_exec); /* 带宽配额 */
+}
+```
+
+`update_curr_fair`（`:1223`）只对 `rq->curr->se` 所在的那一个 `cfs_rq` 做这件事。组层次上每一层的 `curr` 在 `pick_next_task_fair` 往下走的时候各自更新。
+
+`update_min_vruntime`（`:774`）取「当前实体」和「树里最左（vruntime 最小）」的较小值，并且只往前走。零点往前挪时，`avg_vruntime_update` 把已经记在 `avg_vruntime` 里的偏移一起减掉，平均结果不变。
 
 ---
 
-## 3.5 `pick_eevdf`（选实体）
+## 3.5 红黑树：按 vruntime 排，用 min_deadline 当堆
 
-`fair.c:1187` —— 建议整函数对照源码读一遍。逻辑骨架：
+`__entity_less`（`:800`）比较的是 `entity_before`，也就是 `a->vruntime < b->vruntime`。所以 `tasks_timeline` 的最左节点是 **vruntime 最小** 的实体，不是 deadline 最早的。
+
+插入时（`__enqueue_entity`，`:837`）：
+
+1. `avg_vruntime_add`：把 `(vruntime - min_vruntime) * weight` 加进 `avg_vruntime`，权重加进 `avg_load`
+2. `se->min_deadline = se->deadline`
+3. `rb_add_augmented_cached`，增强回调 `min_deadline_update`（`:819`）让每个节点的 `min_deadline` 等于自己和左右孩子的最小 deadline
+
+正在跑的 `curr` 会在 `set_next_entity`（`:5440`）里从树上摘下来。它仍算 on_rq，只是不占树节点。算 `V` 和 eligible 时要单独加回去。
+
+---
+
+## 3.6 `pick_eevdf`（选实体）
+
+`pick_next_entity`（`:5489`）先看 buddy：`NEXT_BUDDY` 开着、`cfs_rq->next` 存在且 eligible，就直接返回它。默认 `NEXT_BUDDY` 是关的，于是落到 `pick_eevdf`（`:975`）。`pick_eevdf` 只是给 `__pick_eevdf` 包一层：万一没选出来，打一行错误并退回最左节点。
+
+`__pick_eevdf`（`:881`）的两段搜索：
 
 ```c
-static struct sched_entity *pick_eevdf(struct cfs_rq *cfs_rq, bool protect)
+static struct sched_entity *__pick_eevdf(struct cfs_rq *cfs_rq)
 {
 	struct rb_node *node = cfs_rq->tasks_timeline.rb_root.rb_node;
-	struct sched_entity *se = __pick_first_entity(cfs_rq); /* 中文：deadline 最左 */
 	struct sched_entity *curr = cfs_rq->curr;
 	struct sched_entity *best = NULL;
+	struct sched_entity *best_left = NULL;
 
-	if (cfs_rq->h_nr_queued == 1) /* 中文：单实体快路径 */
-		return curr && curr->on_rq ? curr : se;
-
-	/* 中文：buddy（next）在保护模式下可优先，换延迟不换公平 */
-	if (sched_feat(PICK_BUDDY) && protect &&
-	    cfs_rq->next && entity_eligible(cfs_rq, cfs_rq->next))
-		return cfs_rq->next;
-
+	/* curr 不在 rq 上，或已经不再 eligible，就不当候选人 */
 	if (curr && (!curr->on_rq || !entity_eligible(cfs_rq, curr)))
 		curr = NULL;
+	best = curr;
 
-	if (curr && protect && protect_slice(curr))
-		return curr; /* 中文：最小量子保护，刚跑别立刻抢走 */
+	/*
+	 * RUN_TO_PARITY：set_next_entity 把「选中那一刻的 deadline」塞进了 vlag。
+	 * vlag 还等于 deadline，说明这一片还没被 update_deadline 换掉，继续跑它。
+	 */
+	if (sched_feat(RUN_TO_PARITY) && curr && curr->vlag == curr->deadline)
+		return curr;
 
-	if (se && entity_eligible(cfs_rq, se)) {
-		best = se;
-		goto found;
-	}
-
-	/* 中文：在 RB 上堆式搜索：左子树若有 eligible 则必更优（deadline 更早） */
 	while (node) {
-		struct rb_node *left = node->rb_left;
-		if (left && vruntime_eligible(cfs_rq,
-					__node_2_se(left)->min_vruntime)) {
-			node = left;
+		struct sched_entity *se = __node_2_se(node);
+
+		/* 这个节点自己不合格，合格的只可能在 vruntime 更小的左子树 */
+		if (!entity_eligible(cfs_rq, se)) {
+			node = node->rb_left;
 			continue;
 		}
-		se = __node_2_se(node);
-		if (entity_eligible(cfs_rq, se)) {
+
+		/* 合格者里留 deadline 更早的 */
+		if (!best || deadline_gt(deadline, best, se))
 			best = se;
-			break;
+
+		/*
+		 * 左子树里每个节点 vruntime 更小，所以如果本节点合格，
+		 * 左子树全都合格。记下左子树里 min_deadline 最好的那支。
+		 */
+		if (node->rb_left) {
+			struct sched_entity *left = __node_2_se(node->rb_left);
+
+			if (!best_left || deadline_gt(min_deadline, best_left, left))
+				best_left = left;
+
+			/* 本节点的 min_deadline 就在左子树里，不用再看右边 */
+			if (left->min_deadline == se->min_deadline)
+				break;
 		}
+
+		/* min_deadline 就是自己，不用往下 */
+		if (se->deadline == se->min_deadline)
+			break;
+
+		/* 否则最早 deadline 在右子树 */
 		node = node->rb_right;
 	}
-found:
-	if (!best || (curr && entity_before(curr, best)))
-		best = curr;
-	return best;
+
+	/* 没有更好的左支，或者 best 的 deadline 比那支的 min_deadline 还早 */
+	if (!best_left || (s64)(best_left->min_deadline - best->deadline) > 0)
+		return best;
+
+	/*
+	 * best_left 整棵子树都合格，只要沿着 min_deadline 往下走到
+	 * deadline == min_deadline 的那个节点。
+	 */
+	node = &best_left->run_node;
+	while (node) {
+		struct sched_entity *se = __node_2_se(node);
+
+		if (se->deadline == se->min_deadline)
+			return se;
+
+		if (node->rb_left &&
+		    __node_2_se(node->rb_left)->min_deadline == se->min_deadline) {
+			node = node->rb_left;
+			continue;
+		}
+
+		node = node->rb_right;
+	}
+	return NULL;
 }
 ```
 
-**延迟 vs 吞吐**：`protect=true` 时更护着当前量子（降切换、护尾延迟）；强制选人时可以 `protect=false`。buddy（`cfs_rq->next`）是「刚唤醒的相关任务」提示，**动的是延迟，不是长期公平**——源码注释写得很直白。
+`set_next_entity`（`:5455`）里的 HACK：实体还在树上时，先把它摘下来，再执行 `se->vlag = se->deadline`。`vlag` 要到出队才重新写成真正的 lag，所以这一段时间里 `vlag == deadline` 就表示「这一片还没换过」。这就是 `RUN_TO_PARITY` 的判据。
 
 ---
 
-## 3.6 放置 `place_entity`（入队时摆 vruntime/deadline）
+## 3.7 放置 `place_entity`（入队时摆 vruntime / deadline）
 
-`fair.c:6383` 起。入队时：
+`fair.c:5194`。它由 `enqueue_entity` 调用，不由 `enqueue_task_fair` 单独先调一次。当前正在跑的实体在 `update_curr` 之前摆；其它实体在改完权重之后摆（见 [04](./04-enqueue-wakeup.md)）。
 
-1. 取 `vruntime = avg_vruntime(cfs_rq)` 作基准  
-2. 默认 `se->slice = sysctl_sched_base_slice`  
-3. 若 `PLACE_LAG` 且有历史 `vlag`：按注释里的公式 **放大 lag** 再放入，避免「一入队 lag 被平均掉」  
-4. 由此设置 `se->vruntime`，并推 `deadline`
+```c
+static void
+place_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
+{
+	u64 vslice, vruntime = avg_vruntime(cfs_rq);
+	s64 lag = 0;
 
-出队前会把 lag 记进 `se->vlag`，睡眠再醒才能「接着欠的账」——这是 wakeup 延迟与公平之间的桥梁。细节与 `enqueue_entity` 一起看 [04](./04-enqueue-wakeup.md)。
+	se->slice = sysctl_sched_base_slice;
+	vslice = calc_delta_fair(se->slice, se);
+
+	/*
+	 * PLACE_LAG 且队列里已经有人：
+	 * 新实体自己会把 V 往后拉，lag 会缩水。
+	 * 先按 vl_i = (W + w_i) * vl'_i / W 把 lag 放大，
+	 * 放进去之后剩下的才是出队时记下的那份。
+	 */
+	if (sched_feat(PLACE_LAG) && cfs_rq->nr_running) {
+		struct sched_entity *curr = cfs_rq->curr;
+		unsigned long load;
+
+		lag = se->vlag;
+
+		load = cfs_rq->avg_load;
+		if (curr && curr->on_rq)
+			load += scale_load_down(curr->load.weight);
+
+		lag *= load + scale_load_down(se->load.weight);
+		if (WARN_ON_ONCE(!load))
+			load = 1;
+		lag = div_s64(lag, load);
+	}
+
+	se->vruntime = vruntime - lag;
+
+	/* 新任务：别人平均已经跑了半片，自己也从半片开始，免得一上来 deadline 特别近 */
+	if (sched_feat(PLACE_DEADLINE_INITIAL) && (flags & ENQUEUE_INITIAL))
+		vslice /= 2;
+
+	/* vd_i = ve_i + r_i / w_i */
+	se->deadline = se->vruntime + vslice;
+}
+```
+
+正的 `vlag` 让 `vruntime = V - lag` 落在平均后面，deadline 也更近，醒来更容易被选中。这是睡眠公平和唤醒延迟之间的桥。出队时 `dequeue_entity` 先 `update_entity_lag` 再把 `on_rq` 清掉。
 
 ---
 
-## 3.7 和「延迟友好 / 吞吐」怎么对照
+## 3.8 延迟和吞吐，各自靠什么
 
 | 你想要的 | 机制上发生什么 |
 |---|---|
-| 交互任务快响 | 短 slice / 正 lag → eligible + 早 deadline；buddy；保护量子别抖 |
-| 批处理别老被切 | 更大权重（nice 低）→ 虚拟时间涨得慢；或 `SCHED_BATCH` |
-| 尾延迟毛刺 | 查：是否不 eligible 被压、是否迁移、是否 cgroup throttle、是否 RT 抢占 |
-
-**不要**再拿「CFS 红黑树按 vruntime 排序」的旧图去硬套 v7.3——树键是 **deadline**，eligible 靠 `min_vruntime` 堆属性剪枝。
+| 交互任务快响 | 睡醒时 lag 为正 → vruntime 落在平均后面，deadline 更早；`WAKEUP_PREEMPTION` 允许抢占 |
+| 少一点无谓切换 | `RUN_TO_PARITY` 让当前这片跑完再换人 |
+| 批处理别老被切 | nice 更优先（权重更大）→ 虚拟时间涨得慢。`SCHED_BATCH` 在 `check_preempt_wakeup_fair`（`:8382`）里不抢占 `SCHED_NORMAL` |
+| 尾延迟毛刺 | 查：是否 lag 为负被判不合格、是否迁走、是否 cgroup 限流、是否 RT 抢占 |
 
 ---
 
-## 3.8 关键函数表
+## 3.9 关键函数表
 
-| 函数 | 行号（约） | 作用 |
+| 函数 | 行号 | 作用 |
 |---|---|---|
-| `avg_vruntime` | fair.c:749 | 计算/更新 V |
-| `entity_lag` / 更新 `vlag` | `:865` 一带 | lag 记账 |
-| `vruntime_eligible` | `:922` | 合格性核心比较 |
-| `entity_eligible` | `:967` | 对 se 的包装 |
-| `pick_eevdf` | `:1187` | 选下一个实体 |
-| `update_deadline` | `:1289` | 耗尽请求后重算 vd |
-| `update_curr` | `:2223` | 推进当前实体账本 |
-| `place_entity` | `:6383` | 入队放置 |
-| `enqueue_entity` / `dequeue_entity` | `:6534` / `:6655` | 入出队 |
+| `calc_delta_fair` | `fair.c:311` | 墙上时间 → 虚拟时间 |
+| `entity_key` | `:572` | `vruntime - min_vruntime` |
+| `avg_vruntime_add` / `avg_vruntime_sub` | `:639` / `:649` | 维护 `avg_vruntime` 与 `avg_load` |
+| `avg_vruntime` | `:671` | 算出 V |
+| `entity_lag` | `:710` | 计算并夹紧虚拟 lag |
+| `update_entity_lag` | `:720` | 出队前写入 `se->vlag` |
+| `entity_eligible` | `:744` | lag ≥ 0 的整数比较 |
+| `update_min_vruntime` | `:774` | 推进零点 v0 |
+| `__enqueue_entity` / `__dequeue_entity` | `:837` / `:845` | 红黑树插入 / 删除 |
+| `__pick_first_entity` | `:852` | 最左，vruntime 最小 |
+| `__pick_eevdf` | `:881` | EEVDF 搜索 |
+| `pick_eevdf` | `:975` | 搜索失败时退回最左 |
+| `update_deadline` | `:1025` | 请求吃完后重算 vd，并 `resched_curr` |
+| `update_curr` | `:1201` | 推进当前实体的 vruntime |
+| `update_curr_fair` | `:1223` | `sched_class.update_curr`，只更新当前任务那一层 |
+| `reweight_entity` | `:3851` | 改权重时按比例改 lag 或 deadline |
+| `place_entity` | `:5194` | 入队放置 ve / vd |
+| `enqueue_entity` / `dequeue_entity` | `:5300` / `:5387` | 入出队 |
+| `set_next_entity` | `:5440` | 选中：摘下树，`vlag = deadline` |
+| `pick_next_entity` | `:5489` | 先看 `NEXT_BUDDY`，再 `pick_eevdf` |
+| `put_prev_entity` | `:5504` | 把当前实体放回树 |
 
 ---
 

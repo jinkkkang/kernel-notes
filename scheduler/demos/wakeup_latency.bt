@@ -1,7 +1,10 @@
 #!/usr/bin/env bpftrace
 /* RECIPE: wakeup → sched_switch latency histogram (us)
  * Needs: bpftrace, CAP_BPF/root, sched tracepoints.
- * Not executed on notes author's box (bpftrace absent).
+ * Not executed on the notes author's box (bpftrace absent).
+ * Fields checked against v6.6.160 include/trace/events/sched.h:
+ *   sched_wakeup / sched_wakeup_new: args->pid
+ *   sched_switch: args->next_pid
  */
 tracepoint:sched:sched_wakeup,
 tracepoint:sched:sched_wakeup_new

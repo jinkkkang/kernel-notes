@@ -11,7 +11,8 @@ OUT=${1:-./box-sched-obs.txt}
   echo "=== /proc/stat head ==="; head -5 /proc/stat
   echo "=== PSI cpu ==="; cat /proc/pressure/cpu 2>&1 || true
   echo "=== cpu.pressure root ==="; cat /sys/fs/cgroup/cpu.pressure 2>&1 || true
-  echo "=== sched_debug ==="; ls -la /proc/sched_debug 2>&1 || true
+  echo "=== sched_debug proc (absent on v6.6.160; snapshot is debugfs) ==="; ls -la /proc/sched_debug 2>&1 || true
+  echo "=== debugfs sched ==="; ls -la /sys/kernel/debug/sched/debug /sys/kernel/debug/sched/features /sys/kernel/debug/sched/base_slice_ns 2>&1 || true
   echo "=== schedstat ==="; ls -la /proc/schedstat 2>&1 || true
   echo "=== self sched ==="; ls -la /proc/self/sched 2>&1 || true
   echo "=== tools ==="; command -v perf || echo 'no perf'; command -v bpftrace || echo 'no bpftrace'
