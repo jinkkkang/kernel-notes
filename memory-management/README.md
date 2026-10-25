@@ -1,8 +1,8 @@
 # 内存管理大章
 
-> 内核版本：**v7.3**（笔记钉 `c03c1a14507d`；`Makefile` 为 `VERSION=7`、`PATCHLEVEL=3`、`SUBLEVEL=0`）。下文路径、函数、行号均对照该树核对。查不到的符号写成「查不到」，不编。
-> 在线对照：[elixir.bootlin.com — linux/v7.3](https://elixir.bootlin.com/linux/v7.3/source)
-> 本机/云端 box 观测快照内核是 **6.12.94+**（见 [13](./13-observability.md)）。数字是实测；结构体与调用链以 v7.3 为准。两套内核不要混成一个行号。
+> 内核版本：**v6.6.160**（`Makefile` 为 `VERSION=6`、`PATCHLEVEL=6`、`SUBLEVEL=160`）。下文路径、函数、行号均对照该树核对。查不到的符号写成「查不到」，不编。
+> 在线对照：[elixir.bootlin.com — linux/v6.6.160](https://elixir.bootlin.com/linux/v6.6.160/source)
+> 本机/云端 box 观测快照内核是 **6.12.94+**（见 [13](./13-observability.md)）。数字是在 6.12 上采样的实测；结构体与调用链以 v6.6.160 为准。两套内核不要混成一个行号。
 
 **一句话**：物理页从 buddy/SLUB 出来，虚拟地址由 `mm_struct` + VMA + 缺页填进页表；回收、THP、KVM 二维页表、balloon/FPR 都是在这两条线上加策略。
 
@@ -64,13 +64,13 @@
 
 这一轮把审计里的 32 条补进了对应笔记。下面这些仍然不展开：
 
-- IOMMU、secretmem、mseal 的完整语义
+- IOMMU、secretmem 的完整语义
 - 具体文件系统的 `address_space_operations`
 - 内核 percpu 分配器（`mm/percpu.c`）内部
-- memory tier、CXL 拓扑的完整策略（`numaperf` 只写了 `access_coordinate` 和 weighted interleave 的入口，在 [03-08-numa-policy.md](./03-08-numa-policy.md)）
+- memory tier、CXL 拓扑的完整策略（`numaperf` 只写了 `access_coordinate` 的入口，在 [03-08-numa-policy.md](./03-08-numa-policy.md)）
 - ZONE_DEVICE 页迁移和 GPU 私有页的状态机（HMM 的 `hmm_range` 在 [11](./11-kvm-memory.md)，到 range API 为止）
-- DAMON scheme 的每种动作（上下文结构在 [13](./13-observability.md)）
-- swap 槽的分配、回收、cluster 锁状态机（`swap_table` 的项布局在 [10-11-swap-table.md](./10-11-swap-table.md)，其余在 `mm/swapfile.c`）
+- DAMON scheme 每种动作的实现细节（上下文结构和 `enum damos_action` 在 [13](./13-observability.md)）
+- swap 槽按设备类型逐槽扫描的每一步（`swap_map`、`swap_cluster_info`、`swap_info_struct` 在 [10-07-swap-zswap.md](./10-07-swap-zswap.md)，其余在 `mm/swapfile.c`）
 
 ## 审计 32 条落点
 
@@ -90,7 +90,7 @@
 | 12 | `migrate_pages` | [10-10-migration.md](./10-10-migration.md)（旧 §10.7） |
 | 13 | hugetlb `resv_map` | [09](./09-thp-and-hugetlb.md) §9.5 |
 | 14 | shmem | [08](./08-page-cache-and-writeback.md) §8.4 |
-| 15 | page_owner / alloc_tag | [14](./14-perf-and-dev-practice.md) §14.7 |
+| 15 | page_owner | [14](./14-perf-and-dev-practice.md) §14.7 |
 | 16 | pagemap / soft-dirty / idle | [13](./13-observability.md) §13.9 |
 | 17 | zswap / zsmalloc | [10-07-swap-zswap.md](./10-07-swap-zswap.md)（旧 §10.3） |
 | 18 | `oom_badness` | [10-08-oom.md](./10-08-oom.md)（旧 §10.4） |
@@ -105,20 +105,18 @@
 | 27 | HMM | [11](./11-kvm-memory.md) §11.9 |
 | 28 | memblock | [02](./02-physical-layout.md) §2.11 |
 | 29 | page_frag | [04](./04-slab.md) §4.7 |
-| 30 | `swap_table` | [10-11-swap-table.md](./10-11-swap-table.md)（旧 §10.8） |
+| 30 | swap 槽（`swap_info_struct` / `swap_cluster_info`） | [10-07-swap-zswap.md](./10-07-swap-zswap.md) |
 | 31 | KSM 扫描循环 / userfaultfd ioctl | [12](./12-balloon-fpr-and-overcommit.md) §12.5、[07](./07-page-fault.md) §7.4 |
-| 32 | 八篇短条目 | 见下 |
+| 32 | 六篇短条目 | 见下 |
 
-第 32 条八篇，都按源码写了短条目：
+第 32 条六篇，都按源码写了短条目：
 
 | 文档 | 落点 |
 |---|---|
 | `page_table_check.rst` | [06](./06-mm-and-vma.md) §6.6 末 |
 | `vmalloced-kernel-stacks.rst` | [05](./05-vmalloc-and-kernel-va.md) §5.7 |
-| `memfd_preservation.rst` | [08](./08-page-cache-and-writeback.md) §8.4 末 |
-| `kho.rst` | [02](./02-physical-layout.md) §2.11 末 |
 | `shrinker_debugfs.rst` | [13](./13-observability.md) §13.11 |
-| `numaperf.rst` | [03-08-numa-policy.md](./03-08-numa-policy.md) 末（旧 §3.8） |
+| `numaperf.rst` | [03-08-numa-policy.md](./03-08-numa-policy.md) 末 |
 | `nommu-mmap.rst`、`remap_file_pages.rst` | [06](./06-mm-and-vma.md) §6.12 |
 
 **前置**：进程章的 `mm` 指针、cgroup 章的 memory 控制器。本章假设你能读 `container_of` 和 `list_head`。

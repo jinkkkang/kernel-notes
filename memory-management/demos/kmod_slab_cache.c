@@ -1,14 +1,18 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * RECIPE：自定义 kmem_cache 示例。本仓库不装载模块。
- * 对照 v7.3：kmem_cache_create() include/linux/slab.h
- *            kmem_cache_alloc_noprof() mm/slub.c:5001
+ * RECIPE：自定义 kmem_cache 示例。本仓库不编译、不装载。
+ * 对照 v6.6.160 的声明（include/linux/slab.h）：
+ *   kmem_cache_create()   五参数，定义在 mm/slab_common.c
+ *   kmem_cache_alloc()    定义在 mm/slub.c
+ *   kmem_cache_free()     定义在 mm/slub.c
+ *   kmem_cache_destroy()  定义在 mm/slab_common.c
  *
- * 模块参数和 insmod 步骤见 memory-management/04-slab.md。
+ * 模块步骤见 memory-management/04-slab.md，标成 RECIPE。
  */
+#include <linux/init.h>
 #include <linux/module.h>
 #include <linux/slab.h>
-#include <linux/init.h>
+#include <linux/string.h>
 
 struct demo_obj {
 	unsigned long seq;
