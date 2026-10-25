@@ -23,7 +23,7 @@
 | | v1（legacy） | v2（default / dfl） |
 |---|---|---|
 | 层次 | **每个控制器可以有自己的树**（或多控制器共树，配置复杂） | **一棵统一树**，控制器按需挂到子树 |
-| 挂载 | 多个 `cgroup` 挂载点 | 通常一个 `cgroup2`（本机：`/sys/fs/cgroup`） |
+| 挂载 | 多个 `cgroup` 挂载点 | 通常一个 `cgroup2`（本机采样：`/sys/fs/cgroup`，sampled on 6.12） |
 | 进程归属 | 同一进程可在不同控制器树的不同节点 | 一个进程在树上**一个位置**（线程模式另说） |
 | 约束 | 弱 | **top-down**、**no internal process**（见 [03](./03-hierarchy-control.md)） |
 | 源码 | `kernel/cgroup/cgroup-v1.c` 等 | `cgroup.c` 默认层次路径 |
@@ -46,7 +46,7 @@ pidns 细节见 [process-management/03-pid-namespaces.md](../process-management/
 
 | 覆盖 | 不覆盖（另章） |
 |---|---|
-| core 对象与 v2 接口 | 完整 EEVDF / `task_group` 调度内部 |
+| core 对象与 v2 接口 | 完整 EEVDF / `task_group` 调度内部（[scheduler/07](../scheduler/07-cgroup-cpu.md)） |
 | fork/exit/attach 挂钩 | 完整 MM 回收、`shrinker` 实现 |
 | cpu/cpuset/memory/io/pids/freezer **控制器侧** | blk-mq、文件系统实现 |
 | PSI、rstat、本机观测 | 完整 perf/ftrace 方法论 |
@@ -59,19 +59,47 @@ pidns 细节见 [process-management/03-pid-namespaces.md](../process-management/
 | 路径 | 角色 |
 |---|---|
 | `include/linux/cgroup-defs.h` | `cgroup` / `css_set` / `cgroup_subsys` 等定义 |
-| `include/linux/cgroup.h` | 对外 API、`task_css_set` 等 |
+| `include/linux/cgroup.h` | 对外 API、`task_css_set`、`struct cgroup_namespace` |
+| `include/linux/cgroup_refcnt.h` | `css_get` / `css_put` 内联实现 |
 | `include/linux/cgroup_subsys.h` | 子系统注册表（`SUBSYS(...)`） |
-| `kernel/cgroup/cgroup.c` | core：mkdir、attach、fork 钩子、v2 文件 |
+| `kernel/cgroup/cgroup.c` | core：mkdir、attach、fork/exit 钩子、v2 文件 |
+| `kernel/cgroup/cgroup-v1.c` | v1 多树与旧接口 |
 | `kernel/cgroup/namespace.c` | cgroup namespace |
 | `kernel/cgroup/rstat.c` | 分层统计 flush |
-| `kernel/cgroup/cpuset.c` / `pids.c` / `freezer.c` / `rdma.c` / `misc.c` / `dmem.c` | 各控制器（部分） |
+| `kernel/cgroup/cpuset.c` / `pids.c` / `freezer.c` / `legacy_freezer.c` / `rdma.c` / `misc.c` | cpuset、pids、v2 freeze 辅助、v1 freezer 子系统、rdma、misc |
 | `kernel/sched/core.c` | **cpu** 控制器（`cpu_cgrp_subsys`） |
+| `kernel/sched/cpuacct.c` | **cpuacct**（只有 v1 文件） |
 | `mm/memcontrol.c` | **memory** 控制器 |
+| `mm/hugetlb_cgroup.c` | **hugetlb** 控制器 |
 | `block/blk-cgroup.c` | **io** 控制器（`io_cgrp_subsys`） |
 | `kernel/sched/psi.c` | PSI |
+| `security/device_cgroup.c` | **devices**（只有 v1 文件） |
+| `kernel/events/core.c` | **perf_event**（默认层次上隐式启用） |
+| `net/core/netclassid_cgroup.c` | **net_cls**（只有 v1 文件 `classid`） |
+| `net/core/netprio_cgroup.c` | **net_prio**（只有 v1 文件） |
 
-v7.3 子系统枚举见 `include/linux/cgroup_subsys.h`：`cpuset`、`cpu`、`cpuacct`、`io`、`memory`、`devices`、`freezer`、`net_cls`、`perf_event`、`net_prio`、`hugetlb`、`pids`、`rdma`、`misc`、`dmem`、（debug）等——是否出现在 `cgroup.controllers` 取决于 Kconfig 与挂载。
+`include/linux/cgroup_subsys.h` 里的登记顺序（是否编进内核看对应 `CONFIG_*`）：
+
+| `SUBSYS` | Kconfig | 在 v2 上的常见身份 |
+|---|---|---|
+| `cpuset` | `CONFIG_CPUSETS` | 普通控制器，`threaded` |
+| `cpu` | `CONFIG_CGROUP_SCHED` | 普通控制器，`threaded` |
+| `cpuacct` | `CONFIG_CGROUP_CPUACCT` | 只有 `legacy_cftypes`，不出现在 v2 的 `cgroup.controllers` |
+| `io` | `CONFIG_BLK_CGROUP` | 普通控制器 |
+| `memory` | `CONFIG_MEMCG` | 普通控制器 |
+| `devices` | `CONFIG_CGROUP_DEVICE` | 只有 v1 文件 |
+| `freezer` | `CONFIG_CGROUP_FREEZER` | v1 子系统在 `legacy_freezer.c`；v2 的冻住走 core 文件 `cgroup.freeze`（`freezer.c`） |
+| `net_cls` | `CONFIG_CGROUP_NET_CLASSID` | v1 网络 classid |
+| `perf_event` | `CONFIG_CGROUP_PERF` | `implicit_on_dfl`：默认层次隐式启用，不写进 `cgroup.controllers` |
+| `net_prio` | `CONFIG_CGROUP_NET_PRIO` | v1 网络优先级 |
+| `hugetlb` | `CONFIG_CGROUP_HUGETLB` | 普通控制器 |
+| `pids` | `CONFIG_CGROUP_PIDS` | 普通控制器，`threaded` |
+| `rdma` | `CONFIG_CGROUP_RDMA` | 普通控制器 |
+| `misc` | `CONFIG_CGROUP_MISC` | 普通控制器 |
+| `debug` | `CONFIG_CGROUP_DEBUG` | 头文件把它放在「默认层次不按普通控制器支持」之后；打开该配置时 `debug.c` 把它标成 `implicit_on_dfl` |
+
+`dfl_cftypes` 为空、又不是 `implicit_on_dfl` 的子系统，会在 `cgroup.c:6162` 被放进 `cgrp_dfl_inhibit_ss_mask`，默认层次上用户看不见它。某个名字是否出现在 `cgroup.controllers`，还要看发行版把哪些 `CONFIG_*` 编进去、以及有没有被绑到 v1 树上。
 
 ---
 
-*对照：`/workspace/linux` v7.3。*
+*对照：Linux v6.6.160。*

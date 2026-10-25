@@ -1,8 +1,8 @@
 # cgroup（控制组）大章
 
-> 内核版本：**v7.3**（笔记钉 `c03c1a14507d`；本机树 `/workspace/linux` 为 `VERSION=7.3.0`）。下文路径/函数/行号均对照该树核对。
-> 在线对照：[elixir.bootlin.com — linux/v7.3](https://elixir.bootlin.com/linux/v7.3/source)
-> 权威用户接口文档：`Documentation/admin-guide/cgroup-v2.rst`
+> 内核版本：**v6.6.160**（stable 6.6 LTS，tag 提交 `0aebf2870d53`，「Linux 6.6.160」）。下文路径、函数、行号、结构体字段都对照该版本源码核对。
+> 在线对照：[elixir.bootlin.com — linux/v6.6.160](https://elixir.bootlin.com/linux/v6.6.160/source)
+> 权威用户接口文档：`Documentation/admin-guide/cgroup-v2.rst`（目录编号 1–6、P、D、R）
 
 **一句话**：cgroup 把进程挂到一棵树上，**core** 管树与迁移，**controllers** 沿树记账/限流；本笔记默认 **cgroup v2 统一层次**。
 
@@ -36,12 +36,12 @@
 
 | 本章覆盖 | 留给其它章 |
 |---|---|
-| cgroup core、v2 接口、各控制器**挂钩点** | 完整 EEVDF 选人（`scheduler/`） |
-| `mem_cgroup` charge / limit 直觉 | 页回收、LRU、`kswapd` 深挖（`memory-management/`） |
-| io 控制器 → `blk-cgroup` 入口 | blk-mq / elevator 内部（`block-io/`） |
-| cgroup namespace | 完整 pidns / mountns（见 `process-management/03`） |
-| freezer v2 与 `JOBCTL_TRAP_FREEZE` 衔接 | 完整信号/作业控制（进程章 `09`） |
-| PSI / rstat 读法 | 完整 perf/ftrace 方法论（`performance/`） |
+| cgroup core、v2 接口、各控制器**挂钩点** | 完整 EEVDF 选人（[scheduler/](../scheduler/README.md)） |
+| `mem_cgroup` charge / limit 直觉 | 页回收、LRU、`kswapd` 深挖（[memory-management/](../memory-management/README.md)） |
+| io 控制器 → `blk-cgroup` 入口 | blk-mq / elevator 内部 |
+| cgroup namespace | 完整 pidns / mountns（见 [process-management/03](../process-management/03-pid-namespaces.md)） |
+| freezer v2 与 `JOBCTL_TRAP_FREEZE` 衔接 | 完整信号/作业控制（[进程章 09](../process-management/09-signals.md)） |
+| PSI / rstat 读法 | 完整 perf/ftrace 方法论 |
 
 ## 可选 demo
 
@@ -60,4 +60,4 @@
 
 ---
 
-*笔记生成对照源码：`/workspace/linux`（v7.3）。*
+*笔记生成对照源码：Linux v6.6.160。*
