@@ -34,7 +34,8 @@ full avg10=0.00 avg60=0.00 avg300=0.00 total=0
 MEASURED: uname, nproc=8, PSI /proc/pressure/cpu, /sys/fs/cgroup/cpu.pressure
 UNAVAILABLE on this box: /proc/sched_debug (CONFIG_SCHED_DEBUG=n), /proc/schedstat (CONFIG_SCHEDSTATS=n), /proc/<pid>/sched (needs SCHED_DEBUG), perf, bpftrace, debugfs tracing (permission denied)
 BOX_KERNEL=6.12.94+
-NOTES_PIN=v7.3 VERSION=7.3.0 (commit c03c1a14507d per prior notes)
+NOTES_PIN=v6.6.160
+# capture itself is sampled on 6.12 (BOX_KERNEL below); numbers were not remeasured on v6.6.160
 CAPTURE_TIME=2026-10-22 20:27:33 CST
 
 === /proc/stat cpu summary (jiffies) ===

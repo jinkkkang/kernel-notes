@@ -1,7 +1,11 @@
 #!/usr/bin/env bpftrace
-/* RECIPE: sched_switch counts by prev_state (coarse)
- * prev_state==0 => typically preempt / still runnable
- * non-zero => voluntary sleep-ish (see task states)
+/* RECIPE: count sched_switch by prev_state (v6.6.160 encoding).
+ * Not executed on the notes author's box (bpftrace absent).
+ *
+ * include/trace/events/sched.h __trace_sched_switch_state():
+ *   0            still TASK_RUNNING, and this switch is not a preempt
+ *   bit 0x100    TASK_REPORT_MAX: preempted (trace text prints R+)
+ *   other bits   S/D/T/t/X/Z/P/I from the prev_state flag table
  */
 tracepoint:sched:sched_switch
 {
