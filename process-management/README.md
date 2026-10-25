@@ -1,9 +1,9 @@
 # Linux 进程管理（大章）
 
-> 内核版本：**v7.3**（commit `c03c1a14507d`）。下文路径/函数/行号均在本机 `/workspace/linux` 对照该版本核对。
-> 在线对照：[elixir.bootlin.com — linux/v7.3](https://elixir.bootlin.com/linux/v7.3/source)
+> 内核版本：**v6.6.160**。下文路径、函数、行号都对照 `/tmp/linux` 里的这份源码。
+> 在线对照：[elixir.bootlin.com — linux/v6.6.160](https://elixir.bootlin.com/linux/v6.6.160/source)
 
-**一句话**：内核里没有独立的「进程对象」和「线程对象」——全是 `task_struct`；差别只在 clone 时哪些资源共享引用、哪些复制。本章从抽象讲到创建/exec/退出/切换/信号，调度「选谁跑」留给下一章。
+**一句话**：内核里没有单独的「进程对象」和「线程对象」，全是 `task_struct`。差别只在 `clone` 时哪些资源共享引用、哪些复制一份。本章从抽象讲到创建、exec、退出、切换和信号。调度器「选谁上 CPU」留给下一章。
 
 ---
 
@@ -24,13 +24,13 @@
 
 本章刻意停下的部分：
 
-- **调度算法**：EEVDF（`sched_entity`、虚拟时间、latency-nice）、RT、DL、`sched_ext`
-- **完整 MM**：`dup_mm` 内部、page fault、THP
-- **完整 ptrace / seccomp / landlock**
+- **调度算法**：公平类 EEVDF（`sched_entity` 上的 `vruntime`、`vlag`、`deadline`、`slice`）、实时（RT）、截止期限（DL）
+- **完整 MM**：`dup_mm` 内部、缺页、大页
+- **完整 ptrace / seccomp**
 - **cgroup 冻结与 cpu controller 细节**
 
-**下一章建议**：从 `__schedule` → `pick_next_task` → EEVDF 实体讲开，仍钉 v7.3 源码。
+**下一章建议**：从 `__schedule` → `pick_next_task` → EEVDF 的 `sched_entity` 讲开，仍对照 v6.6.160 源码。
 
 ---
 
-*笔记生成对照源码：`/workspace/linux`（v7.3，`c03c1a14507d`）。*
+*笔记对照源码：`/tmp/linux`（v6.6.160）。*
