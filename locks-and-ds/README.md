@@ -1,7 +1,7 @@
 # 同步原语与内核数据结构（大章）
 
-> 内核版本：**v7.3**（commit `c03c1a14507d`）。下文路径/函数/行号均在本机 `/workspace/linux` 对照该版本核对。
-> 在线对照：[elixir.bootlin.com — linux/v7.3](https://elixir.bootlin.com/linux/v7.3/source)
+> 内核版本：**v6.6.160**（commit `0aebf2870d53`）。下文路径、函数、结构体字段与行号按该版本核对。
+> 在线对照：[elixir.bootlin.com — linux/v6.6.160](https://elixir.bootlin.com/linux/v6.6.160/source)
 
 **一句话**：先把读内核绕不开的 C 习惯和「嵌入式链表」吃透，再谈谁能睡、谁不能睡，最后才是 RCU——写者等读者走完，而不是互相挡着。
 
@@ -34,7 +34,7 @@
 | `kmod_list_example.c` | 02 | 内核模块**示例** |
 | `kmod_idr_example.c` | 03 | 内核模块**示例** |
 
-用户态一键：
+用户态一键（下面四条在作者机器上跑过，输出见各节，**sampled on 6.12**）：
 
 ```bash
 cd locks-and-ds/demos
@@ -73,12 +73,12 @@ gcc -Wall -O2 -pthread -o 04_atomic_race 04_atomic_race.c && ./04_atomic_race
 刻意薄写或不写：
 
 - **完整内存序教材**（C11 `memory_order_*` 全表）——只点到内核常用的 acquire/release/FULL
-- **PREEMPT_RT 下 spinlock→rt_mutex 的完整语义**——标注差异，不展开实现
-- **SRCU / RCU Tasks Trace / 整棵 rcu_node 树**——点到名字与用途
+- **`PREEMPT_RT` 下 spinlock→`rt_mutex_base` 的完整等待实现**——第 5、6 节给出类型怎么换，不展开 `kernel/locking/spinlock_rt.c`
+- **SRCU / RCU Tasks Trace / 整棵 `rcu_node` 树**——点到名字与用途
 - **完整 lockdep 图论与所有警告类别**
 
-**下一章建议**：调度（EEVDF）或中断/软中断——两者都会大量用到本章的锁与 list。
+**下一章建议**：调度（EEVDF，实现在 `kernel/sched/fair.c` 的 `pick_eevdf`）或中断/软中断——两者都会大量用到本章的锁与 list。
 
 ---
 
-*笔记生成对照源码：`/workspace/linux`（v7.3，`c03c1a14507d`）。*
+*笔记对照源码：Linux v6.6.160（`0aebf2870d53`）。内核树不放进本仓库。*

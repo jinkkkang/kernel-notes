@@ -2,7 +2,7 @@
 
 **结论**：内核 C 不是另一门语言，但有一套固定习惯——**嵌入式节点**、**宏当「带类型的内联」**、**`container_of` 从成员找回整对象**。把这几样练熟，再看 `list_head` / 锁 才不懵。
 
-> 版本钉死：Linux **v7.3**（`c03c1a14507d`）。
+> 版本钉死：Linux **v6.6.160**（`0aebf2870d53`）。
 
 ---
 
@@ -38,23 +38,25 @@ struct my_obj {
 
 「链表挂的是 `link`，业务对象是 `my_obj`」——这是后面所有 `list_for_each_entry` 的前提。
 
-v7.3 里锁类型常用 `context_lock_struct(name) { ... };` 生成带 lockdep 上下文注解的结构体（见 `include/linux/spinlock_types_raw.h:14` 的 `raw_spinlock`）。读笔记时把它当成「就是 `struct name`」即可。
+锁类型也是普通结构体，`typedef` 和字段写在一起。例如 `raw_spinlock_t` 就是 `include/linux/spinlock_types_raw.h:14` 的 `typedef struct raw_spinlock { ... } raw_spinlock_t;`。非 `PREEMPT_RT` 时，`spinlock_t`（`spinlock_types.h:17`）里面再嵌一把 `raw_spinlock`；打开 `PREEMPT_RT` 时，同名类型换成 `rt_mutex_base`。字段全文在 [05-spinlock](./05-spinlock.md)。读笔记时把它当成「带调试字段的结构体」即可，不要再套一层自己的 typedef。
 
 ---
 
 ## 1.3 `typedef`：内核怎么用
 
 ```c
-/* include/linux/types.h:188 */
+/* include/linux/types.h:173 */
 typedef struct {
-	int __aligned(sizeof(int)) counter;  /* 中文：真正的计数器字段 */
+	int counter;  /* 中文：真正的计数器字段；不要直接 ++ */
 } atomic_t;
 
-typedef struct spinlock spinlock_t;      /* 中文：spinlock 是结构体标签，_t 是对外类型名 */
+/* include/linux/refcount.h:111 */
 typedef struct refcount_struct {
-	atomic_t refs;
-} refcount_t;                            /* include/linux/refcount_types.h:15 */
+	atomic_t refs;   /* 中文：内部仍是 atomic_t */
+} refcount_t;
 ```
+
+`spinlock_t` / `raw_spinlock_t` 的类型名写在结构体定义末尾：`typedef struct raw_spinlock { ... } raw_spinlock_t;`（见第 5 节）。
 
 习惯：
 
@@ -66,7 +68,7 @@ typedef struct refcount_struct {
 ## 1.4 `static inline`：头文件里的「小函数」
 
 ```c
-/* include/linux/list.h:51 附近 */
+/* include/linux/list.h:35 */
 static inline void INIT_LIST_HEAD(struct list_head *list)
 {
 	WRITE_ONCE(list->next, list);
@@ -84,9 +86,9 @@ static inline void INIT_LIST_HEAD(struct list_head *list)
 
 | 宏 | 位置 | 作用 |
 |---|---|---|
-| `ARRAY_SIZE(arr)` | `include/linux/array_size.h:11` | `sizeof(arr)/sizeof(arr[0])`，并拒绝「衰减成指针」的误用 |
-| `offsetof(TYPE, MEMBER)` | `include/linux/stddef.h:16` | 成员相对结构体开头的字节偏移（编译期常量） |
-| `likely(x)` / `unlikely(x)` | `include/linux/compiler.h` | 告诉编译器分支冷热（底层 `__builtin_expect`） |
+| `ARRAY_SIZE(arr)` | `include/linux/array_size.h:11` | `sizeof(arr)/sizeof((arr)[0]) + __must_be_array(arr)`，指针冒充数组会编译失败 |
+| `offsetof(TYPE, MEMBER)` | `include/linux/stddef.h:16` | `__builtin_offsetof`，成员相对结构体开头的字节偏移 |
+| `likely(x)` / `unlikely(x)` | `include/linux/compiler.h` | 分支冷热。开了 `CONFIG_TRACE_BRANCH_PROFILING` 时在 `:44` / `:47`（会记统计）；否则 `:76` / `:77`，就是 `__builtin_expect` |
 
 ```c
 if (unlikely(err))
@@ -98,13 +100,16 @@ if (unlikely(err))
 ## 1.6 核心：`container_of`（必须啃）
 
 ```c
-/* include/linux/container_of.h:19 */
+/* include/linux/container_of.h:18 */
 #define container_of(ptr, type, member) ({				\
-	static_assert(__same_type(*(ptr), typeof_member(type, member)) || \
+	void *__mptr = (void *)(ptr);					\
+	static_assert(__same_type(*(ptr), ((type *)0)->member) ||	\
 		      __same_type(*(ptr), void),			\
 		      "pointer type mismatch in container_of()");	\
-	(type *)((void *)(ptr) - offsetof(type, member)); })
+	((type *)(__mptr - offsetof(type, member))); })
 ```
+
+头文件在宏上面写了 WARNING：`ptr` 上的 `const` 会丢掉。要保住 const，用同文件 `:32` 的 `container_of_const`（`_Generic` 看指针是不是 const，再决定返回 `const type *` 还是 `type *`）。
 
 **人话**：已知「指向成员 `member` 的指针 `ptr`」，求「外层 `type` 对象的指针」。
 
@@ -124,17 +129,15 @@ if (unlikely(err))
 ```c
 char *p_member = ...;
 struct my_obj *obj = (struct my_obj *)(p_member - offsetof(struct my_obj, link));
-/* 内核用宏包起来，并做类型检查；新代码更推荐 container_of_const */
+/* 内核用宏包起来，并做 static_assert 类型检查；const 指针用 container_of_const */
 ```
 
-`list_entry` 就是它的别名（`include/linux/list.h:647`）：
+`list_entry` 就是它的别名（`include/linux/list.h:607`）：
 
 ```c
 #define list_entry(ptr, type, member) \
 	container_of(ptr, type, member)
 ```
-
-> 头文件注释写：新代码优先 `container_of_const`（保留 `const`）。读旧代码时两个都会见到。
 
 ---
 
@@ -148,11 +151,12 @@ struct my_obj *obj = (struct my_obj *)(p_member - offsetof(struct my_obj, link))
 | `#include <linux/foo.h>` | 内核构建系统已设好搜索路径 |
 | 禁止随意循环依赖 | 类型前向声明 + 实现放 `.c` 很常见 |
 
-读锁相关时常见拆分：
+读锁相关时常见拆分（都在 6.6 里）：
 
-- `spinlock_types*.h`：类型与初始化器
+- `spinlock_types_raw.h` / `spinlock_types.h`：类型与初始化器
 - `spinlock.h`：`spin_lock*` API
-- `mutex_types.h` / `mutex.h`：同上模式
+- `mutex.h`：mutex 的类型和 `mutex_lock` 等 API
+- `refcount.h`：`refcount_t` 与 `refcount_inc` 等 API
 
 ---
 
@@ -160,13 +164,12 @@ struct my_obj *obj = (struct my_obj *)(p_member - offsetof(struct my_obj, link))
 
 | 名字 | 文件 | 用途 |
 |---|---|---|
-| `container_of` / `container_of_const` | `include/linux/container_of.h` | 成员指针 → 外层对象 |
-| `offsetof` | `include/linux/stddef.h` | 成员偏移 |
-| `ARRAY_SIZE` | `include/linux/array_size.h` | 数组长度 |
-| `likely` / `unlikely` | `include/linux/compiler.h` | 分支提示 |
-| `WRITE_ONCE` / `READ_ONCE` | `include/asm-generic/rwonce.h`（经 compiler 头引入） | 抑制编译器拆分/合并访存；并发下的「单次访问」 |
-
----
+| `container_of` | `include/linux/container_of.h:18` | 成员指针 → 外层对象；丢掉 const |
+| `container_of_const` | 同文件 `:32` | 同上，保留 const |
+| `offsetof` | `include/linux/stddef.h:16` | 成员偏移 |
+| `ARRAY_SIZE` | `include/linux/array_size.h:11` | 数组长度，拒绝指针 |
+| `likely` / `unlikely` | `include/linux/compiler.h:44` 或 `:76` | 分支提示 |
+| `WRITE_ONCE` / `READ_ONCE` | `include/asm-generic/rwonce.h:58` / `:47` | 抑制编译器拆分/合并访存；并发下的「单次访问」 |
 
 ---
 
@@ -184,7 +187,7 @@ gcc -Wall -O2 -o 01_container_of 01_container_of.c
 
 ### 本机实测输出
 
-> 环境：2026-10-22 16:40:47 CST（Asia/Shanghai）；Linux 6.12.94+；gcc (Debian 14.2.0-19) 14.2.0  
+> **sampled on 6.12**。环境：2026-10-22 16:40:47 CST（Asia/Shanghai）；Linux 6.12.94+；gcc (Debian 14.2.0-19) 14.2.0
 > 地址每次运行会变；关键是 `container_of` 找回的指针与 `&obj` 相同。
 
 ```text
@@ -202,11 +205,11 @@ same object?              = YES
 
 ### 和内核 API 的对照
 
-| 用户态 Demo | 内核 |
+| 用户态 Demo | 内核 v6.6.160 |
 |---|---|
-| `<stddef.h>` 的 `offsetof` | `include/linux/stddef.h` |
-| 教学宏 `container_of(ptr,type,member)` | `include/linux/container_of.h`（另有类型检查 / `container_of_const`） |
-| `&obj.link` → 外层 `my_obj *` | `list_entry` / `list_for_each_entry` 的同一算术 |
+| `<stddef.h>` 的 `offsetof` | `include/linux/stddef.h:16` 的 `__builtin_offsetof` |
+| 教学宏 `container_of(ptr,type,member)` | `include/linux/container_of.h:18`（另有 `static_assert`；const 用 `:32` 的 `container_of_const`） |
+| `&obj.link` → 外层 `my_obj *` | `list_entry`（`list.h:607`）/ `list_for_each_entry` 的同一算术 |
 
 
 *下一节：把 `container_of` 用在真正的 `list_head` 上。*
