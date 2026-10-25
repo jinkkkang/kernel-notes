@@ -1,168 +1,198 @@
 # 10.5 MGLRU 代码路径
 
-**结论**：新页在 `lruvec_add_folio` 里被 `lru_gen_add_folio` 放进某一代的链表头，代编号由 `PG_active` / `PG_workingset` / `PG_referenced` 决定。访问不搬链表：文件描述符走 `lru_gen_inc_refs`，缺页期间 `lru_gen_enter_fault` 把这次 fault 标成「带新近度」。老化只给 kswapd 做，`lru_gen_age_node` 决定要不要加 `max_seq`，真正扫页表的是 `try_to_inc_max_seq`。驱逐从最老的代拿页，`sort_folio` 把已经变年轻或该保护的页挪走，剩下的才进 `shrink_folio_list`。`min_ttl` 让最老一代还太年轻时直接 OOM，而不是把工作集赶走。
+**结论**：页进来时 `lru_gen_add_folio` 按热度放进某一代。文件描述符上的访问只调 `folio_inc_refs` 加档，不搬链表。老化由 `try_to_inc_max_seq` 走页表，把年轻 PTE 提升到 `max_seq`。驱逐从最老一代里按 PID 选出类型和档，`sort_folio` 把不该走的页挪走，剩下的交给同一个 `shrink_folio_list`。`min_ttl_ms` 保不住时，kswapd 直接进 `out_of_memory`。
 
-> 入代在 `include/linux/mm_inline.h`。访问计数在 `mm/folio.c`。老化、驱逐在 `mm/vmscan.c`。
+> 函数都在 `mm/vmscan.c` 的 `CONFIG_LRU_GEN` 段，从 `:3227` 起。入代和加档在 `include/linux/mm_inline.h` 与 `mm/swap.c`。
 > 导航：[上一篇 设计](./10-04-mglru-design.md) · [本目录](./10-00-reclaim.md) · [下一篇 对照](./10-06-lru-vs-mglru.md)
 
-查不到的符号：`folio_inc_refs`。v7.3 没有这个函数。加引用次数的是 `lru_gen_inc_refs`（`mm/folio.c:355`）。升一代的是 `folio_inc_gen`（`mm/vmscan.c:3299`）。`mmzone.h:507` 和 `mm_inline.h:232` 的注释写的就是 `folio_inc_gen()`。
+没编 `CONFIG_LRU_GEN` 时，这一节的老化、驱逐函数是空函数，调用点被 `lru_gen_enabled()` 的常量 false 裁掉。见 [01](./10-01-overview.md)。
 
 ---
 
-## 新页入哪代
+## 入代
 
-`folio_add_lru`（`mm/folio.c:468`）在刷进 lruvec 之前，如果 MGLRU 开着、当前在 `lru_gen_in_fault()`、任务不是 `PF_MEMALLOC`、folio 又可回收（`:481-487`）：
+`folio_add_lru`（`mm/swap.c:493`）在 MGLRU 开着、folio 可回收、当前在带新近度的缺页里、且不是 `PF_MEMALLOC` 时，先 `folio_set_active`（`:502-504`）。注释指向 `lru_gen_add_folio`。
 
-- `PG_workingset` 已经立着：`folio_set_active`。注释：refault 回来的工作集页，让它们进年轻代。
-- 否则若还没有 `PG_referenced`：`folio_mark_accessed`。MGLRU 下这个函数转去 `lru_gen_inc_refs`，先立 `PG_referenced`。注释：预读进来的文件页由此进「次老」那一带。
+batch 刷下去时 `lruvec_add_folio`（`mm_inline.h:318`）先试 `lru_gen_add_folio`（`:220`）。成功就 `list_add` 到 `lrugen->folios[gen][type][zone]` 的头，并清掉 `PG_active`，把 gen+1 写进 `folio->flags`。四种选代规则在 [04](./10-04-mglru-design.md)。`reclaiming == true` 时改 `list_add_tail`，给 `folio_rotate_reclaimable` 用。
 
-真正挂链在 `lruvec_add_folio`（`mm_inline.h:347`）→ `lru_gen_add_folio`（`:255`）。unevictable 或 `lrugen->enabled` 为假，返回 false，调用者退回经典 `lists[]`。
-
-`lru_gen_folio_seq`（`:221`）决定序号，注释里的表（`:230-240`）按标志把页放进窗口的不同位置：
-
-| 条件 | 放哪 |
-|---|---|
-| `PG_active` | `MIN_NR_GENS - folio_test_workingset`。workingset 更靠近 `max_seq`，只是 referenced 的略老一点。注释：这是页表通道被 `folio_update_gen` 提升过、或者隔离期间设了 active 的页 |
-| 正在回收（`reclaiming`） | `MAX_NR_GENS`，也就是尽量靠近 `min_seq` 的老端，放链表尾 |
-| 匿名且不在 swap cache，或者脏/写回中且带 `PG_reclaim` | `MIN_NR_GENS`。先别当成最老的可赶走页 |
-| 其余 | `MAX_NR_GENS - (workingset \|\| referenced)`。什么标志都没有就落在最老一代；有 referenced 或 workingset 就年轻一代 |
-
-返回值再和 `min_seq[type]` 取最大，不会把页放到已经回收掉的代里。
-
-`lru_gen_add_folio` 把 gen 写成 `(gen+1) << LRU_GEN_PGOFF`，清掉 `PG_active`（在分代链表上 active 位必须是 0，见 `mmzone.h:461-464`），`lru_gen_update_size` 改 `nr_pages`，同时为了 `/proc/vmstat` 维护 active/inactive 的大小。非回收路径 `list_add` 到链表头，回收路径 `list_add_tail`（`:277-280`）。
+`lrugen->enabled` 为假，或 folio 不可回收，函数返回 false，页回到 `lruvec->lists[]`。
 
 ---
 
-## 访问
+## 访问：加档，不搬代
 
-三条，不要混。
+`folio_mark_accessed`（`mm/swap.c:450`）在 `lru_gen_enabled()` 时只调 `folio_inc_refs`（`:407`）然后返回。
 
-**文件描述符 / `folio_mark_accessed`。** MGLRU 开着时 `folio_mark_accessed`（`folio.c:427`）只调 `lru_gen_inc_refs`（`:355`）就返回。这个函数不拿 LRU 锁：
+`folio_inc_refs` 的顺序：
 
 ```text
-unevictable：返回
-还没有 PG_referenced：
-  立上 PG_referenced，清掉 LRU_REFS_MASK 里的旧值
-已经 referenced，且 LRU_REFS_MASK 还没满：
-  flags += BIT(LRU_REFS_PGOFF)          # 档加一
-已经满了：
-  立 PG_workingset，返回              # 最后一档。真正挪代是驱逐时懒做的
+unevictable：直接返回
+还没 PG_referenced：置上，返回          # 第一档
+还没 PG_workingset：置上，返回          # 第二档
+否则：LRU_REFS 位加 1，到顶就停         # 中间档。见 MAX_NR_TIERS 的注释
 ```
 
-`mmzone.h:501-509` 写了懒晋升：所有引用位和 `PG_workingset` 都立上之后，驱逐路径里 `folio_inc_gen` 把它放进次老一代，并清掉 `LRU_REFS_FLAGS`，计数可以重新开始。`LRU_REFS_MASK` 只在 `PG_referenced` 立着时有意义。
+这几步都是 `folio->flags` 上的原子操作，不拿 `lru_lock`。
 
-**缺页。** `lru_gen_enter_fault`（`mm/memory.c:6779`）把 `current->in_lru_fault` 设成 `vma_has_recency(vma)`。`lru_gen_exit_fault`（`:6785`）清掉。这个标志不改 folio 的代，它决定 `folio_add_lru` 要不要按上面的规则预热标志。顺序读、随机读的 VMA 没有新近度，缺页路径不加分。
+页表通道不走这个函数。老化或 look-around 发现年轻 PTE 时调 `folio_update_gen`（`vmscan.c:3763`）：folio 还在分代链表上，就把 gen 改成目标代，并清掉 refs 位；如果 LRU 位已经被摘掉（`LRU_GEN_MASK` 为 0），只置 `PG_referenced`，留给 `shrink_folio_list`（`:1757` 的注释：`folio_update_gen()` 想提升这一页）。
 
-**页表遍历和 rmap。** 老化扫到年轻 PTE，走 `folio_update_gen`（`vmscan.c:3269`）。第一次只立 `PG_referenced` 并返回 -1，不改代（`:3280-3283`）。第二次把 gen 写成目标代，立 `PG_workingset`，清 `LRU_REFS_FLAGS`。可执行文件页第一次就当 workingset，注释（`:3276-3278`）说是为了避免典型 IO 把它们收回去造成颠簸。rmap 驱逐路径上对应的是 `lru_gen_set_refs`（`:840`），注释写明：映射页在驱逐里要先从 LRU 摘下、设 `PG_active` 再加回去；老化那边的页表遍历用的是 `folio_update_gen`，两条不要当成一个函数。
+多次经文件描述符访问、又被 PID 判成值得保护的页，由 `folio_inc_gen`（`:3786`）在 LRU 锁下挪到 `min_seq+1`。`reclaiming` 为真时同时置 `PG_reclaim`，给写回结束用。
 
 ---
 
 ## 老化
 
-老化只给 kswapd 做。`balance_pgdat`（`:7157`）在 `:7265` 调 `kswapd_age_node`（`:6906`）。MGLRU 打开或正在切换时，它转入 `lru_gen_age_node`（`:4209`），函数开头 `VM_WARN_ON_ONCE(!current_is_kswapd())`。
+kswapd 在 `balance_pgdat` 里先调 `kswapd_age_node`（`:7182`，调用点 `:7518`）。MGLRU 开着时它只转去 `lru_gen_age_node`（`:4614`）然后返回。经典路径才会在匿名 inactive 太短时 `shrink_active_list`。
 
 ```text
-kswapd_age_node                         # vmscan.c:6906
-  lru_gen_enabled 或正在切换：
-    lru_gen_age_node                    # :4209
-      set_initial_priority              # :4128。按可回收页和 nr_to_reclaim 估一个起点，
-                                        #   夹在 DEF_PRIORITY/2 和 DEF_PRIORITY 之间。
-                                        #   注释：估算只用 LRU 页，封顶是为了别把 shrinker 带飞
-      mem_cgroup_iter 扫这个 node 上的每个 memcg
-        lruvec_is_reclaimable           # :4185
-          低于 min：false
-          不够大（lruvec_is_sizable）：false
-          最老一代的出生时间 + min_ttl 已经过了：true
-      min_ttl 非 0 且一个都不可回收，并且 trylock(oom_lock) 成功：
-        out_of_memory                   # 保护最近 min_ttl 这段工作集，宁可 OOM
-  没在切换：直接 return，不走下面的传统 inactive 老化
-  切换中：接着做经典的匿名 inactive 老化（inactive_is_low）
+kswapd_age_node
+  lru_gen_age_node                         # :4614，只允许 kswapd 进来
+    set_initial_priority                   # :4539，按可回收页估算起始 priority
+    遍历每个 memcg 的 lruvec
+      低于 min：跳过
+      最老一代的出生时间 + min_ttl 已过：这组还算可回收
+    所有组都保不住，且抢到 oom_lock：
+      out_of_memory                        # 见 10-08，以及下面的 min_ttl
+
+驱逐侧也会老化，不等 kswapd：
+  get_nr_to_scan                           # :5336
+    should_run_aging                      # :5264
+      冷页已经不够（min_seq + MIN_NR_GENS > max_seq）：该老化
+      代数已经比 MIN_NR_GENS+1 多：先不老化
+      年轻页超过 1/MIN_NR_GENS，或老页少于 1/(MIN_NR_GENS+2)：该老化
+    priority 还是 DEF_PRIORITY：跳过老化，只返回扫描量
+    否则 try_to_inc_max_seq                # :4485
 ```
 
-`min_ttl` 来自 `lru_gen_min_ttl`（`:4207`，jiffies）。sysfs 的 `min_ttl_ms` 在 [06](./10-06-lru-vs-mglru.md)。注释（`:4229-4232`）写了两种「全都不可回收」：每一代都比 `min_ttl` 年轻，或者所有 memcg 太小 / 低于 min。两条都进同一个 `out_of_memory`。`trylock` 失败就跳过，不在 kswapd 里排队等 OOM 锁。
-
-`lru_gen_age_node` 自己不加 `max_seq`。加序号是驱逐驱动的：窗口里的代数接近下限时，驱逐路径调用 `try_to_inc_max_seq`（`:4070`）。
+`try_to_inc_max_seq`：
 
 ```text
-try_to_inc_max_seq(lruvec, seq, swappiness, force_scan)   # :4070
-  没有 mm_state（没编 LRU_GEN_WALKS_MMU）：
-    直接 inc_max_seq
-  硬件不会自动置 accessed 位：
-    iterate_mm_list_nowalk               # 退回 look-around。注释（:4089-4092）：
-                                         #   把清访问位的工作摊开通常更慢，但避免突发缺页
-  否则：
-    set_mm_walk
-    iterate_mm_list → walk_mm            # 走 lruvec 所属 memcg 的 mm_list，walk_page_range
-    成功后再 inc_max_seq                 # :4005
+这一轮的 mm_state.seq 已经追上 max_seq：不再走
+硬件不会自动置 accessed，或分配不到 walk：
+  iterate_mm_list_nowalk                  # :3641，只把 mm_state.seq 加一
+否则：
+  set_mm_walk                            # :4317，kswapd 用 pgdat->mm_walk，别人临时分配
+  walk->can_swap / force_scan 从参数填入
+  iterate_mm_list + walk_mm              # :3573 / :4272
+    walk_page_range 扫 PTE
+    年轻 PTE：folio_update_gen 提升到 max_seq 那一格
+成功：inc_max_seq                        # :4428
 ```
 
-`inc_max_seq`（`:4005`）在某一类已经堆满 `MAX_NR_GENS` 时，先 `inc_min_seq` 把最老的空代或该收的代推掉。然后更新 active/inactive 的 vmstat 大小：`max_seq-1` 和 `max_seq+1` 两格对一下（`:4035-4056`）。注释写明两边都要盖住，因为换出受限时 `max_seq+1` 可能和 `min_seq[LRU_GEN_ANON]` 重叠，重叠就是 cold/hot inversion。这是 MGLRU 自己的记账角落，不是经典 LRU 的行为。最后 `timestamps[next] = jiffies`，`smp_store_release` 把 `max_seq` 加一。
+`inc_max_seq` 在锁里做三件事：窗口已经有 `MAX_NR_GENS` 代时先 `inc_min_seq`（`:4349`）把最老一代整体挪到下一格；按 active/inactive 的 ABI 改 `nr_pages` 统计；`timestamps[next] = jiffies`，然后 `max_seq++`。
 
-`lru_gen_look_around`（`:4256`）是回收走 rmap 时的反馈。注释和设计文档一致：已经拿着 PTL。清掉当前 PTE 的 young 之后，若锁没人抢、VMA 不是特殊映射，就在同一个 PMD 覆盖的相邻 PTE 里找热页，把它们提升到更年轻的代。扫得够整齐就把这个 PMD 记进 Bloom filter，下一轮页表扫描可以对准它。声明在 `mmzone.h:692`。没编 MGLRU 时 `mmzone.h:714` 的内联版本直接返回 false。2023 年底的修复 `c28ac3c7eb94` 让它跳过 `VM_PFNMAP` 一类特殊 VMA；v7.3 的函数体里对 VMA 的过滤以 `:4256` 之后的代码为准，本篇不把旧补丁的条件再抄一遍。
+注释（`:4452-4456`）写了 cold/hot inversion：`max_seq+1` 可能和 `min_seq[LRU_GEN_ANON]` 重叠（swap 受限制时），重叠的话冷热会反号。所以改统计时，当前 `max_seq` 两侧都要算进去。这是分代链表自己的记账，不是经典双链表的行为。
+
+`should_walk_mmu`（`:3237`）要求 `arch_has_hw_pte_young()` 并且 `LRU_GEN_MM_WALK` 这位开着。硬件不置 accessed 位时，老化退回 `lru_gen_look_around`，一次只清少数 PTE，避免突发的缺页（`:4502-4506`）。
+
+---
+
+## look-around
+
+`lru_gen_look_around`（`:4661`）。注释（`:4654-4659`）：`shrink_folio_list` 走 rmap 时，如果碰到年轻 PTE，就扫相邻 PTE，把热页提升；扫得对 cache line 友好，就把指向这张 PTE 表的 PMD 放进 Bloom filter。驱逐和老化由此接成环。
+
+它要求已经拿着页表锁。锁竞争、或者 VMA 带 `VM_SPECIAL`，直接返回。扫描范围夹在同一个 PMD 里，超过 `MIN_LRU_BATCH` 页就截短。rmap 侧的调用点在 `mm/rmap.c:830`（条件从 `:828` 起）。
 
 ---
 
 ## 驱逐
 
-全局回收进 `lru_gen_shrink_node`（`:5229`）。`VM_WARN_ON_ONCE(!root_reclaim(sc))`。注释（`:5236-5240`）：未映射的干净页已经优先过了，memcg 很多时再专门去找它们，延迟会很高，所以 `may_writepage` 或 `may_unmap` 为假就什么也不做，直接返回。
+全局回收：
 
 ```text
-lru_gen_shrink_node                         # :5229
-  lru_add_drain                             # 先把 per-CPU batch 刷进去
-  set_mm_walk(pgdat, sc->proactive)
-  set_initial_priority
-  memcg 关闭：shrink_one(&pgdat->__lruvec)
-  否则：shrink_many                         # memcg 代，随机桶起步
-    → 每个选中的 lruvec：try_to_shrink_lruvec 一类，最终 evict_folios
-
-memcg 自己的回收（不是 root）：
-  lru_gen_shrink_lruvec                     # :5208
-    同样 lru_add_drain、set_mm_walk
-    try_to_shrink_lruvec
-    做完把这个 memcg 转到 YOUNG
+shrink_node
+  lru_gen_enabled 且 root_reclaim：
+    lru_gen_shrink_node                  # :5570
+      may_writepage 或 may_unmap 为假：只更新 kswapd_failures，不扫
+      set_mm_walk(pgdat)
+      memcg 关掉：shrink_one(&pgdat->__lruvec)
+      否则：shrink_many                  # :5465
+        从老代的随机桶头开始
+        shrink_one                       # :5422
+          低于 min：MEMCG_LRU_YOUNG
+          低于 low 且还没在 tail：MEMCG_LRU_TAIL
+          try_to_shrink_lruvec
+          shrink_slab
+          成功且 memcg 还在线：MEMCG_LRU_YOUNG
 ```
 
-`evict_folios`（`:4875`）：
+memcg 自己的回收不走 `shrink_many`。`shrink_lruvec`（`:6297`）在非 root 且 MGLRU 开着时调 `lru_gen_shrink_lruvec`（`:5535`），里面直接 `try_to_shrink_lruvec`。
 
 ```text
-拿 lruvec 锁
-try_to_inc_min_seq                          # 删除页之后留下的空老代先扔掉
-isolate_folios                              # :4841
-  get_type_to_scan                          # :4822。swappiness 极低只扫文件，极高只扫匿名
-                                            #   否则 read_ctrl_pos + positive_ctrl_err
-  get_tier_idx                              # 这一类里该扫的档
-  scan_folios                               # :4727。从 min_seq 那代的链表上拿
-    sort_folio 返回 true：这个页还不该走，挪去别的代
-    否则 isolate_folio                      # :4703。folio_try_get、清 PG_lru、lru_gen_del_folio
-  这一类一个都没隔离且 scanned==0：才换另一类
-  注释（:4863-4866）：扫过但隔离数为 0，不要急着换类，换得太勤会打乱 positive_ctrl_err 的偏向
-放锁
-shrink_folio_list                           # 和经典路径同一个函数，见 02
-  folio_check_references 在 MGLRU 下走 lru_gen_set_refs
-没收回去的页 move 回代链表
+try_to_shrink_lruvec                     # :5387
+  get_swappiness                         # :3290
+    may_swap 为假，或没有 swap 又不能降级：返回 0
+    有 __GFP_IO 限制时，非 0 的 swappiness 改成 1   # 先扫文件
+  循环：
+    get_nr_to_scan                       # 可能在这里老化，返回 -1 表示该轮转 memcg
+    evict_folios                         # :5175
+    扫够了，或 should_abort_scan：停
 ```
 
-`sort_folio`（`:4654`）在持锁时决定一个还在最老代链表上的 folio 去哪：
+`should_abort_scan`（`:5356`）：memcg 回收不提前停，为了公平。全局回收收够了 `nr_to_reclaim` 就停。kswapd 且 order 为 0 时，所有合格 zone 都高于 HIGH（开了内存分层则是 `WMARK_PROMO`）再加 `MIN_LRU_BATCH`，也可以停。
 
-| 情况 | 动作 |
+`evict_folios`：
+
+```text
+isolate_folios                           # :5133
+  swappiness 0：只看文件
+  min_seq[anon] < min_seq[file]：先匿名（匿名更老）
+  swappiness 1：同一代时先文件
+  swappiness 200：同一代时先匿名
+  其余：get_type_to_scan                 # :5105，PID
+  scan_folios                            # :5009
+    sort_folio 返回 true 的页留在分代链表上
+    isolate_folio 成功的放进待回收链表
+try_to_inc_min_seq                       # 空代直接把 min_seq 往前推
+shrink_folio_list                        # 和经典路径同一个函数
+没成功的：脏且 PG_reclaim 的留在原代；其余打上 PG_active 再放回
+干净、没被拒绝的再试一轮
+move_folios_to_lru
+```
+
+`sort_folio`（`:4912`）在 LRU 锁下决定这一页还要不要被隔离：
+
+| 条件 | 动作 |
 |---|---|
-| 不可回收 | 返回 false。注释（`:4668`）：让它走通用路径，由那边剔除。不要在这里直接塞 unevictable。2026 年的修复说明（提交 `f7e698e326b2`）写过旧的捷径会把 `mlock_count` 污染成 `LIST_POISON2`；v7.3 的代码是「返回 false」这条 |
-| gen 已经不是 `min_seq` 这一代 | `list_move` 到它现在的代。老化已经提升过它 |
-| `tier > tier_idx`，或者引用位全部立满 | `folio_inc_gen`（`:3299`）升一代，记入 `protected[]`。引用位全满的那次懒晋升不计入 protected |
-| `zone > sc->reclaim_idx` | 这次分配用不上这个 zone。`folio_inc_gen` 后 `list_move_tail`，先放到一边 |
-| 其余 | 返回 false，调用者隔离它去 `shrink_folio_list` |
+| 不可回收 | 放行，交给通用路径剔除 |
+| 文件类型上的脏匿名页（lazyfree） | 设回 swapbacked，丢到链尾 |
+| gen 已经不是最老 | 挪到它自己那一代，不算驱逐 |
+| tier 高于保护线，或 refs 满了 | `folio_inc_gen`，计入 `protected` |
+| zone 高于 `reclaim_idx` | `folio_inc_gen`，这轮不收 |
+| 锁着、写回中，或脏文件页 | `folio_inc_gen(..., reclaiming=true)`，等写回 |
 
-`folio_inc_gen` 清 `LRU_REFS_FLAGS`，所以文件描述符通道的计数可以重新从 `PG_referenced` 开始。这就是 `mmzone.h:507` 那句。
+`get_tier_idx`（`:5085`）用 1:2 的 gain 比较第一档和更高档。注释：留一点波动余量，因为其它档的 refault 至少是第一档的两倍，才值得保护。
+
+---
+
+## `min_ttl`
+
+变量是 `lru_gen_min_ttl`（`:4612`），单位 jiffies。sysfs `min_ttl_ms` 用毫秒读写（`:5754` / `:5760`）。
+
+`lruvec_is_reclaimable`（`:4590`）读文件侧最老一代的 `timestamps`，出生时间加上 `min_ttl` 还在现在之后，这组就还受保护。`lru_gen_age_node` 发现每个 memcg 要么太小、要么低于 min、要么最老一代还太年轻，就 `out_of_memory`（`:4639`）。设计文档 Working set protection（`multigen_lru.rst:145-152`）写的是同一件事：保护 `lru_gen_min_ttl` 毫秒内的工作集，保不住就 OOM。默认 0，等于关掉。管理文档里 `N=1000` / `N=3000` 的说法见 [06](./10-06-lru-vs-mglru.md)，标 RECIPE。
 
 ---
 
 ## refault
 
-`workingset_refault`（`mm/workingset.c:548`）在 MGLRU 打开时调用 `lru_gen_refault`（`:350` 的空桩在未编配置里；编了的实现在同文件前部）后返回，不走经典的 `folio_set_active` 距离判断。
+`workingset_refault`（`mm/workingset.c:537`）在 MGLRU 开着时转去 `lru_gen_refault`（`:279`）。
 
-`mmzone.h:518-520`：`PG_workingset` 一旦立上，就留到这个 folio 被回收，或者被 `lru_gen_clear_refs()` 清掉。refault 时如果 `lru_gen_test_recent()` 为真，可以再次立上。shadow 里除了代序号，还带着 `LRU_REFS_WIDTH` 位的引用计数（`workingset.c:259`、`:317`）。距离用 `max_seq` 的差，小于 `MAX_NR_GENS` 算最近（`:289`）。
+```text
+lru_gen_test_recent                      # :262
+  shadow 里的 min_seq 还等于现在这一类的 min_seq：算近
+记 WORKINGSET_REFAULT
+不够近：返回
+够近：
+  按 shadow 里的 refs 算 tier，refaulted[hist][type][tier] += 页数
+  记 WORKINGSET_ACTIVATE
+  当前在缺页里，或 refs 已经到顶：
+    置满 LRU_REFS 并置 PG_workingset
+    记 WORKINGSET_RESTORE
+```
 
-经典 shadow 和 `nonresident_age` 仍在，两套 LRU 共用 `workingset_*` 计数。本机有这些计数，不能用来判断 MGLRU 开没开。
+「近」比的是 shadow 里记下的 `min_seq` 和现在的 `min_seq` 是否还是同一代（`:276`），不是经典路径的 `nonresident_age` 距离。
+
+赶走时 `workingset_eviction`（`:381`）转去 `lru_gen_eviction`（`:231`）：把当时的 `min_seq` 和 refs 打进 shadow，并给 `evicted[]` 加页数。
 
 ---
 
@@ -170,30 +200,46 @@ shrink_folio_list                           # 和经典路径同一个函数，�
 
 | 符号 | 位置 | 作用 |
 |---|---|---|
-| `lru_gen_add_folio` | `include/linux/mm_inline.h:255`（未编时 `:330` 返回 false） | 新页或放回的页进入某一代 |
-| `lru_gen_folio_seq` | `mm_inline.h:221` | 按标志计算该进哪一代 |
-| `lru_gen_del_folio` | `mm_inline.h:285` | 离开分代链表 |
-| `lru_gen_inc_refs` | `mm/folio.c:355`（未编时 `:399` 是空函数） | 文件描述符通道加档。没有 `folio_inc_refs` 这个符号 |
-| `lru_gen_enter_fault` | `mm/memory.c:6779` | 缺页期间的新近度标记 |
-| `lru_gen_exit_fault` | `mm/memory.c:6785` | 清标记 |
-| `folio_update_gen` | `mm/vmscan.c:3269` | 页表遍历发现年轻 PTE 后改代 |
-| `folio_inc_gen` | `vmscan.c:3299` | 驱逐时保护，升一代并清引用位 |
-| `lru_gen_set_refs` | `vmscan.c:840` | rmap 驱逐路径上的第二次访问 |
-| `kswapd_age_node` | `:6906` | `balance_pgdat` 的老化入口 |
-| `lru_gen_age_node` | `:4209`（未编时 `:5952` 为 `BUILD_BUG()`） | kswapd 看 min_ttl，必要时 OOM |
-| `try_to_inc_max_seq` | `:4070` | 页表遍历之后加 `max_seq` |
-| `inc_max_seq` | `:4005` | 持锁加最年轻代，更新 vmstat |
-| `lru_gen_look_around` | `:4256`（声明 `mmzone.h:692`） | rmap 上顺手提升相邻热页，喂 Bloom filter |
-| `lru_gen_shrink_node` | `:5229`（未编时 `:5962` 为 `BUILD_BUG()`） | MGLRU 全局回收 |
-| `lru_gen_shrink_lruvec` | `:5208`（未编时 `:5957` 为 `BUILD_BUG()`） | 单个 memcg 的 MGLRU 回收 |
-| `evict_folios` | `:4875` | 一个 lruvec 上隔离、排序、交给 `shrink_folio_list` |
-| `isolate_folios` | `:4841` | 选类、选档、扫最老代 |
-| `sort_folio` | `:4654` | 该保护的升代，该隔离的留给调用者 |
-| `get_type_to_scan` | `:4822` | PID 决定扫匿名还是文件 |
-| `scan_folios` | `:4727` | 扫一代里的一个档 |
-| `isolate_folio` | `:4703` | 从分代链表摘下一个 folio |
-| `lru_gen_refault` | `mm/workingset.c:292`（未编时 `:350` 是空函数） | refault 时恢复档位。调用点 `:559` |
+| `lru_gen_add_folio` | `include/linux/mm_inline.h:220` | 入代 |
+| `folio_inc_refs` | `mm/swap.c:407` | 文件描述符通道加档 |
+| `folio_update_gen` | `mm/vmscan.c:3763` | 页表通道提升代 |
+| `folio_inc_gen` | `:3786` | 保护或推迟时挪到下一代 |
+| `lru_gen_age_node` | `:4614` | kswapd 的工作集保护和 min_ttl OOM |
+| `set_initial_priority` | `:4539` | 按可回收页估算 priority |
+| `should_run_aging` | `:5264` | 冷页不够或分布太偏时该老化 |
+| `get_nr_to_scan` | `:5336` | 扫描量；必要时老化并返回 -1 |
+| `try_to_inc_max_seq` | `:4485` | 走一遍 mm 链表，成功则 `max_seq++` |
+| `inc_max_seq` | `:4428` | 窗口满了先推 `min_seq`，再加 `max_seq` |
+| `inc_min_seq` | `:4349` | 最老一代整体挪到下一格 |
+| `try_to_inc_min_seq` | `:4385` | 空代直接把 `min_seq` 向前推 |
+| `iterate_mm_list` | `:3573` | 从 memcg 的 mm 链表取下一个 mm |
+| `iterate_mm_list_nowalk` | `:3641` | 硬件不扫页表时只推进 `mm_state.seq` |
+| `walk_mm` | `:4272` | 对一个 mm 走页表 |
+| `set_mm_walk` | `:4317` | 挂上 `reclaim_state->mm_walk` |
+| `clear_mm_walk` | `:4336` | 卸下，非 kswapd 的 walk 要释放 |
+| `lru_gen_look_around` | `:4661` | rmap 上扫相邻 PTE，热点 PMD 进 Bloom |
+| `should_walk_mmu` | `:3237` | 硬件置 accessed 且 `LRU_GEN_MM_WALK` 开着 |
+| `should_clear_pmd_young` | `:3242` | 非叶子 accessed 位 |
+| `lru_gen_shrink_node` | `:5570` | 全局回收入口 |
+| `shrink_many` | `:5465` | 按 memcg 代扫。无 memcg 时 `:5558` 是 `BUILD_BUG()` |
+| `shrink_one` | `:5422` | 一个 memcg：保护、驱逐、shrinker |
+| `lru_gen_shrink_lruvec` | `:5535` | memcg 自己的回收。无 memcg 时 `:5563` 是 `BUILD_BUG()` |
+| `try_to_shrink_lruvec` | `:5387` | 老化加驱逐的循环 |
+| `should_abort_scan` | `:5356` | 全局回收可以提前停 |
+| `get_swappiness` | `:3290` | 这次能不能换出、该用多大的 swappiness |
+| `evict_folios` | `:5175` | 隔离、`shrink_folio_list`、放回 |
+| `isolate_folios` | `:5133` | 先选类型，再 `scan_folios` |
+| `get_type_to_scan` | `:5105` | PID 选匿名还是文件，以及保护到哪一档 |
+| `get_tier_idx` | `:5085` | 同一类里保护到哪一档 |
+| `scan_folios` | `:5009` | 从最老一代挑 folio |
+| `sort_folio` | `:4912` | 不该走的页挪代或推迟 |
+| `isolate_folio` | `:4975` | 真正摘下来 |
+| `lru_gen_rotate_memcg` | `:4782` | 按 HEAD/TAIL/OLD/YOUNG 挪 memcg |
+| `lru_gen_refault` | `mm/workingset.c:279` | MGLRU 的 refault |
+| `lru_gen_test_recent` | `workingset.c:262` | shadow 里的 `min_seq` 是否还是当前代 |
+| `lru_gen_eviction` | `workingset.c:231` | 赶走时打包 shadow 并计 `evicted` |
+| `out_of_memory` | `mm/oom_kill.c:1113` | `min_ttl` 保不住时由 kswapd 调用 |
 
 ---
 
-[上一篇 设计](./10-04-mglru-design.md) · [本目录](./10-00-reclaim.md) · [下一篇 两套对照](./10-06-lru-vs-mglru.md)
+[上一篇 设计](./10-04-mglru-design.md) · [本目录](./10-00-reclaim.md) · [下一篇 经典 LRU 与 MGLRU 对照](./10-06-lru-vs-mglru.md)

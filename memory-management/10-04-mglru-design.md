@@ -5,131 +5,147 @@
 > 结构在 `include/linux/mmzone.h`，`CONFIG_LRU_GEN` 包着。设计文档 `Documentation/mm/multigen_lru.rst` 和下面的注释是同一套说法，行号以源码为准。
 > 导航：[上一篇 问题](./10-03-lru-problems.md) · [本目录](./10-00-reclaim.md) · [下一篇 代码路径](./10-05-mglru-code-path.md)
 
-没编 `CONFIG_LRU_GEN` 时，这些结构不存在。`mm_inline.h:315` 的 `lru_gen_enabled()` 恒返回 false，`lru_gen_age_node`（`vmscan.c:5952`）和 `lru_gen_shrink_node`（`:5962`）的函数体是 `BUILD_BUG()`。调用点包在 `lru_gen_enabled() || lru_gen_switching()` 里，常量条件把调用裁掉。
+没编 `CONFIG_LRU_GEN` 时，这些结构不存在。`mm_inline.h:295` 的 `lru_gen_enabled()` 恒返回 false，`lru_gen_add_folio`（`:305`）恒返回 false。`lru_gen_age_node`（`vmscan.c:6272`）、`lru_gen_shrink_lruvec`（`:6276`）、`lru_gen_shrink_node`（`:6280`）是空函数。
+
+编了 `CONFIG_LRU_GEN` 但没编 `CONFIG_MEMCG` 时，`shrink_many`（`:5558`）和 `lru_gen_shrink_lruvec`（`:5563`）的函数体是 `BUILD_BUG()`。全局回收在 `mem_cgroup_disabled()` 时改走 `shrink_one(&pgdat->__lruvec, sc)`（`:5596-5597`）。
 
 ---
 
 ## 代和档
 
-设计文档 Workflow（`multigen_lru.rst:82-107`）和 `mmzone.h:444-494` 说的是同一件事。
+设计文档 Workflow（`multigen_lru.rst:82-107`）和 `mmzone.h:320-370` 说的是同一件事。
 
-`MIN_NR_GENS` 是 2，`MAX_NR_GENS` 是 4（`:471-472`）。窗口长度在这两者之间滑动。`folio->flags` 里的 gen 计数存的是 `gen+1`，范围 `[1, MAX_NR_GENS]`；不在 `lrugen->folios[]` 上时存 0（`:449-450`）。截断宽度是 `order_base_2(MAX_NR_GENS+1)` 位（`:468`，设计文档 `:90`）。这个数由 `kernel/bounds.c:27` 写成 `LRU_GEN_WIDTH`（`CONFIG_LRU_GEN` 时），生成进 `include/generated/bounds.h`，源码树里没有生成结果。`MAX_NR_GENS + 1` 是 5，`order_base_2(5)` 是不小于 5 的最小 2 的幂的指数，即 3。`vmscan.c:5936` 有 `BUILD_BUG_ON(BIT(LRU_GEN_WIDTH) <= MAX_NR_GENS)`，保证这几位装得下。
+`MIN_NR_GENS` 是 2，`MAX_NR_GENS` 是 4（`:348-349`）。窗口长度在这两者之间滑动。`folio->flags` 里的 gen 计数存的是 `gen+1`，范围 `[1, MAX_NR_GENS]`；不在 `lrugen->folios[]` 上时存 0（`:325-326`）。截断宽度是 `order_base_2(MAX_NR_GENS+1)` 位（`:345`，设计文档 `:90`）。这个数由 `kernel/bounds.c:26` 写成 `LRU_GEN_WIDTH`（`CONFIG_LRU_GEN` 时），生成进 `include/generated/bounds.h`。`MAX_NR_GENS + 1` 是 5，`order_base_2(5)` 是 3。`vmscan.c:6258` 有 `BUILD_BUG_ON(BIT(LRU_GEN_WIDTH) <= MAX_NR_GENS)`，保证这几位装得下。
 
-second chance（`:452-455`）：folio 缺页进来之后，老化至少要查两次访问位。第一次清掉缺页时带上的 accessed，第二次确认之后没用过。这至少要两代，所以 `MIN_NR_GENS` 是 2。为了 `/proc/vmstat` 一类 ABI，这两代算 active，更老的代算 inactive（`:456-459`）。`lru_gen_is_active`（`mm_inline.h:165`）就是 `gen` 等于 `max_seq` 或 `max_seq-1` 的那两格。
+second chance（`:328-336`）：folio 缺页进来之后，老化至少要查两次访问位。第一次清掉缺页时带上的 accessed，第二次确认之后没用过。这至少要两代，所以 `MIN_NR_GENS` 是 2。为了 `/proc/vmstat` 一类 ABI，这两代算 active，更老的代算 inactive。`lru_gen_is_active`（`mm_inline.h:164`）就是 `gen` 等于 `max_seq % MAX_NR_GENS` 或 `(max_seq-1) % MAX_NR_GENS` 的那两格。
 
-`min_seq[anon]` 和 `min_seq[file]` 理想情况下同步。为了极端 swappiness，允许错开，最多 `MAX_NR_GENS - MIN_NR_GENS - 1` 代（`:555-558`）。4 - 2 - 1 = 1，也就是最多差一代。注释说的是「at most」，算出来是 1。
+`PG_active` 在 folio 挂上 `lrugen->folios[]` 期间一直是清的，老化不用管它。隔离去做迁移这类「不是回收」的事时，如果这一代算 active，再把 `PG_active` 设回去（`:338-341`）。看 `lru_gen_add_folio` / `lru_gen_del_folio`。
 
-档：经文件描述符访问 N 次的 folio 在 tier `order_base_2(N)`（`:475-476`）。`MAX_NR_TIERS` 是 4（`:494`）。第一档（N=0 或 1）靠 `PG_referenced`，除非是经页表缺页进来或预读。最后一档靠 `PG_workingset`。中间档用 `LRU_REFS_WIDTH` 位。`kernel/bounds.c:28` 把 `__LRU_REFS_WIDTH` 定义成 `MAX_NR_TIERS - 2`，也就是 2。真正的 `LRU_REFS_WIDTH` 在 `page-flags-layout.h:112` 里是这个值和「页标志剩余位数」的较小者，位数不够会被截短。
+`min_seq[anon]` 和 `min_seq[file]` 平常同步。swap 受限制时（例如没有 swap 空间），文件的 `min_seq` 可以往前走，把匿名的 `min_seq` 留在后面（`:411-413`）。`seq_is_valid`（`vmscan.c:3310`）把这个关系写成：文件的代数在 `[MIN_NR_GENS, 匿名的代数]` 里，匿名的代数不超过 `MAX_NR_GENS`。也就是文件的 `min_seq` 不小于匿名的。
 
-跨代要拿 LRU 锁。跨档只是 `folio->flags` 上的原子操作（`:482-483`）。驱逐时比较第一档和其余档的 `refaulted/(evicted+protected)`，决定多次经文件描述符访问的页算不算热、值不值得保护（`:484-487`）。
+档：经文件描述符访问 N 次的 folio 在 tier `order_base_2(N)`（`:352-353`）。`MAX_NR_TIERS` 是 4（`:371`）。第一档（N=0 或 1）靠 `PG_referenced`，除非是经页表缺页进来或预读。其余档（N>1）同时靠 `PG_referenced` 和 `PG_workingset`（`:353-357`）。`kernel/bounds.c:27` 把 `__LRU_REFS_WIDTH` 定义成 `MAX_NR_TIERS - 2`，也就是 2。真正的 `LRU_REFS_WIDTH` 在 `page-flags-layout.h:110` 里是这个值和「页标志剩余位数」的较小者，位数不够会被截短。
+
+跨代要拿 LRU 锁。跨档只是 `folio->flags` 上的原子操作（`:359-361`）。驱逐时比较第一档和其余档的 `refaulted/(evicted+protected)`，决定多次经文件描述符访问的页算不算热、值不值得保护（`:361-364`）。第一档不需要 protected 计数，所以 `protected[]` 的最后一维是 `MAX_NR_TIERS - 1`（`:433`）。
 
 页表访问和文件描述符访问是两条通道。设计文档 Assumptions（`multigen_lru.rst:51-78`）写明页表这条保护更强，三条理由：访问位是近似的，不确定性更高；赶走它要刷 TLB，也更容易碰到脏位，成本更高；保护不足的惩罚更高，因为应用程序通常不像对待阻塞 IO 那样为 major fault 做准备。默认假设页表通道有时间局部性，除非 VMA 带 `VM_SEQ_READ` 或 `VM_RAND_READ`；文件描述符通道默认没有，除非观察到离群的 refault。
 
-`lru_gen_in_fault`（`mm_inline.h:122`）看的是 `current->in_lru_fault`。缺页入口 `lru_gen_enter_fault`（`mm/memory.c:6779`）把它设成 `vma_has_recency(vma)`。注释：LRU 算法只处理带新近度的访问。
+`vma_has_recency`（`mm_inline.h:600`）在 `VM_SEQ_READ`、`VM_RAND_READ` 或文件的 `FMODE_NOREUSE` 时返回 false。`lru_gen_in_fault`（`:120`）看的是 `current->in_lru_fault`。缺页入口 `handle_mm_fault`（`mm/memory.c:5323`）在 `:5350` 调用 `lru_gen_enter_fault`（`:5262`），把它设成 `vma_has_recency(vma)`。注释：LRU 算法只处理带新近度的访问。
 
 ---
 
-## `struct lru_gen_folio`（`mmzone.h:563`）
+## `struct lru_gen_folio`（`mmzone.h:418`）
 
 ```c
 struct lru_gen_folio {
-	/*
-	 * 最年轻一代的编号。老化时增加。匿名和文件共用。
-	 */
+	/* 最年轻一代的编号。老化时增加。匿名和文件共用 */
 	unsigned long max_seq;
 	/*
 	 * 各自最老一代。回收时增加。
-	 * 允许和另一类差若干代，用来适应极端 swappiness。差多少见上。
+	 * 平常同步。swap 受限制时，文件可以走在匿名前面。
 	 */
 	unsigned long min_seq[ANON_AND_FILE];
-	/*
-	 * 每一代的出生时间，单位 jiffies。
-	 * inc_max_seq 里 WRITE_ONCE(timestamps[next], jiffies)（vmscan.c:4061）。
-	 */
+	/* 每一代的出生时间，单位 jiffies。inc_max_seq 里写入（vmscan.c:4478） */
 	unsigned long timestamps[MAX_NR_GENS];
-	/*
-	 * 分代链表。下标是代、匿名/文件、zone。驱逐时才懒排序。
-	 */
+	/* 分代链表。下标是代、匿名/文件、zone。驱逐时才懒排序 */
 	struct list_head folios[MAX_NR_GENS][ANON_AND_FILE][MAX_NR_ZONES];
 	/*
-	 * 每一格的页数。注释（:560-561）写明最终一致，
+	 * 每一格的页数。注释（:415-416）写明最终一致，
 	 * reset_batch_size() 还没做完时可以暂时是负数。
 	 */
 	long nr_pages[MAX_NR_GENS][ANON_AND_FILE][MAX_NR_ZONES];
-	/*
-	 * refault 的指数滑动平均。PID 的 I 项，平滑系数 1/2（vmscan.c:3177）。
-	 */
+	/* refault 的指数滑动平均。PID 的 I 项，平滑系数 1/2（vmscan.c:3673） */
 	unsigned long avg_refaulted[ANON_AND_FILE][MAX_NR_TIERS];
-	unsigned long avg_total[ANON_AND_FILE][MAX_NR_TIERS]; /* 被驱逐加被保护的滑动平均 */
+	/* 被驱逐加被保护的滑动平均 */
+	unsigned long avg_total[ANON_AND_FILE][MAX_NR_TIERS];
 	/*
 	 * 受保护页。只能在 LRU 锁下改。
+	 * 第一档不需要保护，所以最后一维是 MAX_NR_TIERS - 1。
 	 */
-	unsigned long protected[NR_HIST_GENS][ANON_AND_FILE][MAX_NR_TIERS];
-	/*
-	 * 被驱逐的。可以不拿 LRU 锁。
-	 */
+	unsigned long protected[NR_HIST_GENS][ANON_AND_FILE][MAX_NR_TIERS - 1];
+	/* 被驱逐的。可以不拿 LRU 锁 */
 	atomic_long_t evicted[NR_HIST_GENS][ANON_AND_FILE][MAX_NR_TIERS];
-	atomic_long_t refaulted[NR_HIST_GENS][ANON_AND_FILE][MAX_NR_TIERS]; /* 被重新缺页进来的 */
+	/* 被重新缺页进来的。同样可以不拿 LRU 锁 */
+	atomic_long_t refaulted[NR_HIST_GENS][ANON_AND_FILE][MAX_NR_TIERS];
 	/*
 	 * 这个 lruvec 是否启用 MGLRU。
 	 * lru_gen_add_folio 看到它为假就返回 false，页回到经典链。
 	 */
 	bool enabled;
-	u8 gen;					/* 所属 memcg 代 */
-	u8 seg;					/* 在 memcg 链表的哪一段（head / tail / default） */
-	struct hlist_nulls_node list;		/* 挂到节点的全局回收 memcg 链表 */
+#ifdef CONFIG_MEMCG
+	/* 所属 memcg 代 */
+	u8 gen;
+	/* 在 memcg 链表的哪一段（head / tail / default） */
+	u8 seg;
+	/* 挂到节点的全局回收 memcg 链表 */
+	struct hlist_nulls_node list;
+#endif
 };
 ```
 
-`NR_HIST_GENS`：编了 `CONFIG_LRU_GEN_STATS` 时等于 `MAX_NR_GENS`，否则是 1（`:545-549`）。历史统计关掉时，被赶走的代只留最新一格。`lru_gen_full` 要历史，见 [06](./10-06-lru-vs-mglru.md)。
+`NR_HIST_GENS`：编了 `CONFIG_LRU_GEN_STATS` 时等于 `MAX_NR_GENS`，否则是 1（`:399-402`）。历史统计关掉时，被赶走的代只留最新一格。`lru_gen_full` 要历史，见 [06](./10-06-lru-vs-mglru.md)。
+
+`lru_gen_add_folio`（`mm_inline.h:220`）按四种情况选代，注释写在 `:234-243`：
+
+| 情况 | 放进哪一代 |
+|---|---|
+| `PG_active`，刚缺页进来的热页 | `max_seq`，最年轻 |
+| 匿名且还没进 swap cache，或者带 `PG_reclaim` 的脏页 / 写回中 | `max_seq - 1`，次年轻 |
+| 正在回收，或者窗口还没比 `MIN_NR_GENS` 更长 | `min_seq[type]`，最老 |
+| 其余 | 算 inactive 则 `min_seq+1`，否则最老 |
+
+unevictable 或 `enabled == false` 时直接返回 false（`:231`）。
 
 ---
 
-## `struct lru_gen_mm_state`（`:604`）
+## `struct lru_gen_mm_state`（`:463`）
 
-双缓冲 Bloom filter。`NR_BLOOM_FILTERS` 是 2（`:602`）。
+双缓冲 Bloom filter。`NR_BLOOM_FILTERS` 是 2（`:461`）。挂在 `lruvec` 里，和 `CONFIG_LRU_GEN` 一起出现，没有再套别的配置宏。
 
 ```c
 struct lru_gen_mm_state {
-	/*
-	 * 和 max_seq 对齐。每轮迭代之后同步。
-	 */
+	/* 和 max_seq 对齐。每轮迭代之后同步 */
 	unsigned long seq;
 	struct list_head *head;		/* 当前这轮从 mm 链表的哪里继续 */
 	struct list_head *tail;		/* 上一轮在哪里结束 */
-	/*
-	 * Bloom filter。每轮翻转用哪一张。
-	 */
+	/* Bloom filter。每轮翻转用哪一张 */
 	unsigned long *filters[NR_BLOOM_FILTERS];
-	unsigned long stats[NR_HIST_GENS][NR_MM_STATS]; /* 调试用的 mm 计数 */
+	/* 调试用的 mm 计数 */
+	unsigned long stats[NR_HIST_GENS][NR_MM_STATS];
 };
 ```
 
-`NR_MM_STATS`（`:593-599`）：`MM_LEAF_TOTAL` 叶子项总数，`MM_LEAF_YOUNG` 年轻叶子，`MM_NONLEAF_FOUND` 在 Bloom filter 里找到的非叶子，`MM_NONLEAF_ADDED` 加进 Bloom filter 的非叶子。
+`NR_MM_STATS`（`:450-457`）：
 
-设计文档 Bloom filters 一节（`multigen_lru.rst:195-209`）：成员测试是概率的。假阳性的代价是多扫一段 PTE，而这段里仍可能有热页。假阳性率由 filter 自己的参数封顶。
+| 枚举 | 含义 |
+|---|---|
+| `MM_LEAF_TOTAL` | 叶子项总数 |
+| `MM_LEAF_OLD` | 老叶子 |
+| `MM_LEAF_YOUNG` | 年轻叶子 |
+| `MM_NONLEAF_TOTAL` | 非叶子总数 |
+| `MM_NONLEAF_FOUND` | 在 Bloom filter 里找到的非叶子 |
+| `MM_NONLEAF_ADDED` | 加进 Bloom filter 的非叶子 |
+
+设计文档 Bloom filters 一节（`multigen_lru.rst:195-209`）：成员测试是概率的。假阳性的代价是多扫一段 PTE，而这段里仍可能有热页。假阳性率由 filter 自己的参数封顶。代码里的参数写在 `vmscan.c:3322-3326`：`m = 1<<15`，`k = 2`，插入约 10000 项时假阳性大约 1/5，约 20000 项时大约 1/2。`BLOOM_FILTER_SHIFT` 是 15（`:3344`）。
 
 ---
 
-## `struct lru_gen_mm_walk`（`:617`）
+## `struct lru_gen_mm_walk`（`:476`）
 
-一个回收线程正在做的页表遍历。挂在 `struct reclaim_state.mm_walk` 上（`include/linux/swap.h:151`）。
+一个回收线程正在做的页表遍历。挂在 `struct reclaim_state.mm_walk` 上（`include/linux/swap.h:160`）。kswapd 还有一份嵌在 `pg_data_t` 里（`mmzone.h:1390`）。
 
 ```c
 struct lru_gen_mm_walk {
 	struct lruvec *lruvec;			/* 正在回收的 lruvec */
 	/*
-	 * 从 lru_gen_folio 读来的 max_seq。注释写明可以是过期的。
+	 * 从 lru_gen_folio 读来的 max_seq。注释写明可以是过期的（unstable）。
 	 */
-	unsigned long seq;
+	unsigned long max_seq;
 	unsigned long next_addr;		/* 这个 mm 里下一次从哪个地址接着扫 */
-	/*
-	 * 攒着的、待提升页数。批量刷进 lrugen->nr_pages。
-	 */
+	/* 攒着的、待提升页数。批量刷进 lrugen->nr_pages */
 	int nr_pages[MAX_NR_GENS][ANON_AND_FILE][MAX_NR_ZONES];
 	int mm_stats[NR_MM_STATS];		/* 攒着的 mm 计数 */
 	int batched;				/* 攒下的总项数 */
-	int swappiness;				/* 这次遍历用的 swappiness */
+	bool can_swap;				/* 这次遍历能不能动匿名 */
 	/*
 	 * 为真时少用启发式、多扫。debugfs 的 force_scan 最终传到这里。
 	 */
@@ -139,9 +155,9 @@ struct lru_gen_mm_walk {
 
 ---
 
-## `struct ctrl_pos`（`mm/vmscan.c:3192`）
+## `struct ctrl_pos`（`mm/vmscan.c:3688`）
 
-PID 的一个采样点。注释（`:3174-3190`）：
+PID 的一个采样点。注释（`:3669-3686`）：
 
 - P 项：正在被驱逐的那一代里，某一档的 `refaulted/(evicted+protected)`。
 - I 项：以前各代 P 项的指数滑动平均，平滑系数 1/2。
@@ -155,27 +171,25 @@ struct ctrl_pos {
 	unsigned long total;		/* 被驱逐加上被保护 */
 	/*
 	 * 增益。比较匿名和文件时，一边放 swappiness，
-	 * 另一边放 MAX_SWAPPINESS - swappiness（get_type_to_scan，:4835）。
+	 * 另一边放 200 - swappiness（get_type_to_scan，:5109）。
 	 */
 	int gain;
 };
 ```
 
-`positive_ctrl_err`（`:3253`）：PV 的 refault 少于 `MIN_LRU_BATCH`，或者 PV 的 refault/total 比 SP 低（按 gain 缩放），返回 true。`MIN_LRU_BATCH` 是 `BITS_PER_LONG`（`mmzone.h:541`）。
+`positive_ctrl_err`（`:3747`）：PV 的 refault 少于 `MIN_LRU_BATCH`，或者 PV 的 refault/total 比 SP 低（按 gain 缩放），返回 true。`MIN_LRU_BATCH` 是 `BITS_PER_LONG`（`mmzone.h:395`）。`MAX_LRU_BATCH` 是它的 64 倍（`:396`）。
 
-`read_ctrl_pos`（`:3198`）把平均和当前历史格加在一起。`reset_ctrl_pos`（`:3217`）在一代结束时把当前值除 2 写回平均，或清掉历史格。
+`read_ctrl_pos`（`:3694`）把平均和当前历史格加在一起。有 tier 时，`total` 再加 `protected[hist][type][tier - 1]`。`reset_ctrl_pos`（`:3709`）在一代结束时把当前值除 2 写回平均，或清掉历史格。
 
 ---
 
-## `struct lru_gen_memcg`（`mmzone.h:679`）
+## `struct lru_gen_memcg`（`mmzone.h:543`）
 
-每个 node 一份 memcg 的 LRU，本身也是「LRU 的 LRU」：每个 node×memcg 还有自己的 folio LRU（`mem_cgroup_lruvec()`）。`MEMCG_NR_GENS` 是 3，`MEMCG_NR_BINS` 是 8（`:676-677`）。注释（`:669-674`）说明为什么是 3 代而不是 2 代：有效的只有老（seq）和年轻（seq+1）。多出来的一格是为了无锁读到过期的 `seq-1` 时，不会绕回年轻代。
+每个 node 一份 memcg 的 LRU，本身也是「LRU 的 LRU」：每个 node×memcg 还有自己的 folio LRU（`mem_cgroup_lruvec()`）。`MEMCG_NR_GENS` 是 3，`MEMCG_NR_BINS` 是 8（`:540-541`）。注释（`:536-538`）说明为什么是 3 代而不是 2 代：有效的只有老（seq）和年轻（seq+1）。多出来的一格是为了无锁读到过期的 `seq-1` 时，不会绕回年轻代。没编 memcg 时这个结构是空的，`MEMCG_NR_GENS` 定义成 1（`:565-567`）。
 
 ```c
 struct lru_gen_memcg {
-	/*
-	 * 这个 node 的 memcg 代计数。模 MEMCG_NR_GENS 之后指向老代。
-	 */
+	/* 这个 node 的 memcg 代计数。模 MEMCG_NR_GENS 之后指向老代 */
 	unsigned long seq;
 	unsigned long nr_memcgs[MEMCG_NR_GENS];	/* 每一代里有多少 memcg */
 	/*
@@ -187,7 +201,7 @@ struct lru_gen_memcg {
 };
 ```
 
-操作和触发事件写在 `:645-666`，这里按注释复述，不另起一套名字：
+操作和触发事件写在 `:509-530`：
 
 | 操作 | 做什么 |
 |---|---|
@@ -198,19 +212,24 @@ struct lru_gen_memcg {
 
 触发：超过 soft limit → HEAD。第一次回收一个低于 low 的 memcg → TAIL。第一次回收已下线或低于可回收尺寸阈值的 memcg → TAIL；第二次 → YOUNG。试图回收低于 min 的 → YOUNG。驱逐路径上老化做完 → YOUNG。memcg 下线 → OLD。新上线的 memcg 加到老代某个随机桶的尾。驱逐从老代某个随机桶的头开始。老代所有桶空了，node 的 memcg 代计数加一。
 
-设计文档（`multigen_lru.rst:241-251`）补了全局回收上的两点：分片让每个线程随机起步，提高并行；直接回收可以随时停，公平放在一段时间上看（各 memcg 的 `max_seq` 轮转增加）。最好情况 O(1)，最坏仍 O(n)。
+节点上的这份在 `pg_data_t.memcg_lru`（`mmzone.h:1392`），只在 `CONFIG_LRU_GEN` 下编译。
 
 ---
 
-## 老化、驱逐、工作集，各一句
+## 运行时能力位
 
-老化生产年轻代。`max_seq - min_seq + 1` 接近 `MIN_NR_GENS` 时增加 `max_seq`。找到经页表访问过的热页，把它的 gen 更新成 `(max_seq % MAX_NR_GENS) + 1`，冷页因为编号前移而自然变老（设计文档 `:113-126`）。页表遍历走 `lruvec_memcg()->mm_list`，对每个 `mm_struct` 调 `walk_page_range()`。多个遍历者分到不同的 mm，可以并行（`:166-170`）。已经迁移走的 mm，留在旧 memcg 里的页会被忽略；别的 node 上的页也会被忽略（`:172-175`）。上下文切换之间会记 mm 的使用，睡着的进程可以跳过（`:177-179`）。
+`mmzone.h:388-393`：
 
-驱逐消费老代。`min_seq` 那一格的链表空了，就把 `min_seq` 加一（`:130-132`）。先比 `min_seq[]`，选更老的那一类；一样老，就选第一档 refault 百分比更低的那一类。第一档是单次使用、未映射、干净的页，文档称之为最好的下注（`:134-136`）。
+```c
+enum {
+	LRU_GEN_CORE,			/* 主开关，bit 0 */
+	LRU_GEN_MM_WALK,		/* 成批清叶子 PTE 的访问位，bit 1 */
+	LRU_GEN_NONLEAF_YOUNG,		/* 连非叶子一起清，bit 2 */
+	NR_LRU_GEN_CAPS
+};
+```
 
-工作集保护：每代出生时盖时间戳。`lru_gen_min_ttl` 非 0 时，最老一代的年龄还在这个毫秒数之内，这个 lruvec 不被驱逐。保不住就 OOM（`:145-152`）。文档列的好处：和具体应用、内存大小无关，所以好配；直接接到 OOM killer，所以比一个软阈值可靠（`:154-158`）。
-
-代码怎么把这些串起来，在 [05](./10-05-mglru-code-path.md)。
+`/sys/kernel/mm/lru_gen/enabled` 读出来的就是这三位的掩码。实现和文档对照见 [06](./10-06-lru-vs-mglru.md)。
 
 ---
 
@@ -218,15 +237,20 @@ struct lru_gen_memcg {
 
 | 符号 | 位置 | 作用 |
 |---|---|---|
-| `lru_gen_enabled` | `include/linux/mm_inline.h:107` 或 `:114`；未编时 `:315` | 主开关。未编时恒 false |
-| `lru_gen_is_active` | `mm_inline.h:165` | 最年轻的两代算 active |
-| `lru_tier_from_refs` | `mm_inline.h:137` | 引用次数到档。`workingset` 直接最后一档 |
-| `folio_lru_refs` | `mm_inline.h:145` | 从 `PG_referenced` 和 `LRU_REFS_MASK` 读次数 |
-| `folio_lru_gen` | `mm_inline.h:158` | 从 `LRU_GEN_MASK` 读代，没有则 -1 |
-| `read_ctrl_pos` | `mm/vmscan.c:3198` | 读 PID 的一个点 |
-| `positive_ctrl_err` | `:3253` | PV 是不是比 SP 更值得扫 |
-| `reset_ctrl_pos` | `:3217` | 滑动平均除 2，或清历史 |
-| `lru_gen_enter_fault` | `mm/memory.c:6779` | 缺页期间标记 `in_lru_fault`。未编时 `:6790` 是空函数 |
+| `lru_gen_enabled` | `include/linux/mm_inline.h:105` / `:112` / `:295` | 主开关。三种编译条件 |
+| `lru_gen_in_fault` | `mm_inline.h:120` | 当前缺页是否带新近度 |
+| `lru_gen_enter_fault` | `mm/memory.c:5262` | `handle_mm_fault`（`:5323`）在 `:5350` 调用它 |
+| `vma_has_recency` | `mm_inline.h:600` | 顺序读、随机读、`FMODE_NOREUSE` 时为假 |
+| `lru_gen_from_seq` | `mm_inline.h:125` | `seq % MAX_NR_GENS` |
+| `lru_gen_is_active` | `mm_inline.h:164` | 最年轻的两代算 active |
+| `folio_lru_gen` | `mm_inline.h:157` | 从 `folio->flags` 读代，不在链表上是 -1 |
+| `folio_lru_refs` | `mm_inline.h:143` | 文件描述符通道的访问次数（第一档算 0） |
+| `lru_gen_add_folio` | `mm_inline.h:220` | 按热度放进某一代 |
+| `lru_gen_del_folio` | `mm_inline.h:271` | 从分代链表摘下 |
+| `seq_is_valid` | `mm/vmscan.c:3310` | 文件代数夹在 MIN 和匿名代数之间 |
+| `positive_ctrl_err` | `vmscan.c:3747` | PV 比 SP 冷，或样本太少 |
+| `read_ctrl_pos` | `:3694` | 读一档的 refault / total / gain |
+| `reset_ctrl_pos` | `:3709` | 一代结束时把历史折进平均 |
 
 ---
 
