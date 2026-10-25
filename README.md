@@ -1,10 +1,10 @@
 # kernel-notes
 
-对着 Linux 内核真实源码整理的子系统笔记。默认版本：**v7.3**（最新稳定版，以当时 kernel.org 为准）。
+对着 Linux 内核真实源码整理的子系统笔记。内核版本：**Linux 6.6 LTS（v6.6.160）**。结构体、函数、行号都对照这个版本；本机观测数字采自 6.12，文中会标明 sampled on 6.12。
 
 源码不放在本仓库，请自行对照：
 
-- [elixir.bootlin.com — linux/v7.3](https://elixir.bootlin.com/linux/v7.3/source)
+- [elixir.bootlin.com — linux/v6.6.160](https://elixir.bootlin.com/linux/v6.6.160/source)
 - [git.kernel.org stable](https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git)
 
 ## 目录
@@ -14,7 +14,7 @@
 | [process-management/](./process-management/) | **进程管理（大章）**：总览与 `CLONE_*`、`task_struct`、PID/pidns、fork/clone、内核线程、exec、exit/回收、上下文切换入口、信号、观测清单。调度选人算法（EEVDF）见 scheduler。 |
 | [locks-and-ds/](./locks-and-ds/) | **同步原语与内核数据结构（大章）**：读内核够用的 C、`list_head`/hlist、树与映射容器、atomic/refcount、spinlock、mutex/rwsem/seqlock、RCU、lockdep 与踩坑。面向 C 新手补嵌入式链表与宏。 |
 | [cgroup/](./cgroup/) | **控制组（大章）**：cgroup v2 core 与对象模型、层次接口、fork/exit 挂钩与 cgroup ns、cpu/cpuset、memory、io/pids/freezer、PSI/rstat、本机观测。完整调度/MM/块层另章。 |
-| [scheduler/](./scheduler/) | **调度（大章）**：调度类链、`rq`/`cfs_rq`/`sched_entity`、EEVDF、入队与唤醒、负载均衡、cgroup cpu 衔接、RT/DL/sched_ext 边界、观测与性能分析配方。 |
+| [scheduler/](./scheduler/) | **调度（大章）**：调度类链、`rq`/`cfs_rq`/`sched_entity`、EEVDF、入队与唤醒、负载均衡、cgroup cpu 衔接、RT/DL 边界、观测与性能分析配方。 |
 | [memory-management/](./memory-management/) | **内存管理（大章）**：物理页与 zone、buddy、SLUB、vmalloc、mm/VMA 与页表、缺页、页缓存、THP/hugetlb、回收与 OOM、KVM 二维页表与 mmu_notifier、balloon/FPR/热插拔、本机 `/proc` 观测与症状剧本。cgroup charge 与完整 VFS 另章。 |
 
 ### 进程管理子章节
@@ -74,7 +74,7 @@
 | [03-eevdf.md](./scheduler/03-eevdf.md) | EEVDF 选人 |
 | [04-enqueue-wakeup.md](./scheduler/04-enqueue-wakeup.md) | 入队出队与 ttwu |
 | [05-load-balance.md](./scheduler/05-load-balance.md) | PELT 与负载均衡 |
-| [06-other-classes.md](./scheduler/06-other-classes.md) | RT / DL / idle / stop / sched_ext |
+| [06-other-classes.md](./scheduler/06-other-classes.md) | RT / DL / idle / stop |
 | [07-cgroup-cpu.md](./scheduler/07-cgroup-cpu.md) | 与 cgroup cpu 衔接 |
 | [08-observability.md](./scheduler/08-observability.md) | 观测与本机实测 |
 | [09-perf-analysis.md](./scheduler/09-perf-analysis.md) | 性能分析配方 |
@@ -87,17 +87,17 @@
 | [01-overview.md](./memory-management/01-overview.md) | 物理线与虚拟线、总图 |
 | [02-physical-layout.md](./memory-management/02-physical-layout.md) | page / folio / node / zone / buddy / sparsemem / memblock |
 | [03-00-page-alloc.md](./memory-management/03-00-page-alloc.md) | 页分配：调用链、GFP/scope、水位、PCP、释放合并、慢路径、高阶与 compaction、mempolicy、CMA。 |
-| [04-slab.md](./memory-management/04-slab.md) | SLUB sheaf 与 `kmem_cache`、page frag |
+| [04-slab.md](./memory-management/04-slab.md) | SLUB 与 `kmem_cache`、page frag |
 | [05-vmalloc-and-kernel-va.md](./memory-management/05-vmalloc-and-kernel-va.md) | vmalloc、highmem、`kmap_local`、VMAP_STACK |
 | [06-mm-and-vma.md](./memory-management/06-mm-and-vma.md) | `mm_struct`、VMA、页表、TLB、rmap、overcommit |
 | [07-page-fault.md](./memory-management/07-page-fault.md) | 缺页：匿名、文件、COW、userfaultfd、hwpoison |
 | [08-page-cache-and-writeback.md](./memory-management/08-page-cache-and-writeback.md) | 页缓存、脏页、shmem |
-| [09-thp-and-hugetlb.md](./memory-management/09-thp-and-hugetlb.md) | THP、mTHP、hugetlb 预留、HVO |
-| [10-00-reclaim.md](./memory-management/10-00-reclaim.md) | 回收：`scan_control`、经典 LRU、MGLRU 设计与路径、对照与开关、zswap、OOM、mlock、迁移、swap table。 |
+| [09-thp-and-hugetlb.md](./memory-management/09-thp-and-hugetlb.md) | THP、hugetlb 预留、HVO |
+| [10-00-reclaim.md](./memory-management/10-00-reclaim.md) | 回收：`scan_control`、经典 LRU、MGLRU 设计与路径、对照与开关、zswap、OOM、mlock、迁移。 |
 | [11-kvm-memory.md](./memory-management/11-kvm-memory.md) | EPT/NPT、memslot、TDP MMU、mmu_notifier、HMM |
 | [12-balloon-fpr-and-overcommit.md](./memory-management/12-balloon-fpr-and-overcommit.md) | balloon、FPR、KSM、virtio-mem、内存热插拔 |
 | [13-observability.md](./memory-management/13-observability.md) | 本机 `/proc`、pagemap、DAMON、shrinker debugfs |
-| [14-perf-and-dev-practice.md](./memory-management/14-perf-and-dev-practice.md) | 按症状排障、page_owner、allocinfo |
+| [14-perf-and-dev-practice.md](./memory-management/14-perf-and-dev-practice.md) | 按症状排障、page_owner |
 
 ## 约定
 
