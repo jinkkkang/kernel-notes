@@ -16,6 +16,7 @@
 | [cgroup/](./cgroup/) | **控制组（大章）**：cgroup v2 core 与对象模型、层次接口、fork/exit 挂钩与 cgroup ns、cpu/cpuset、memory、io/pids/freezer、PSI/rstat、本机观测。完整调度/MM/块层另章。 |
 | [scheduler/](./scheduler/) | **调度（大章）**：调度类链、`rq`/`cfs_rq`/`sched_entity`、EEVDF、入队与唤醒、负载均衡、cgroup cpu 衔接、RT/DL 边界、观测与性能分析配方。 |
 | [memory-management/](./memory-management/) | **内存管理（大章）**：物理页与 zone、buddy、SLUB、vmalloc、mm/VMA 与页表、缺页、页缓存、THP/hugetlb、回收与 OOM、KVM 二维页表与 mmu_notifier、balloon/FPR/热插拔、本机 `/proc` 观测与症状剧本。cgroup charge 与完整 VFS 另章。 |
+| [interrupts/](./interrupts/) | **中断（大章）**：x86-64 IDT 入口、APIC/MSI 向量、genirq 对象与层次域、向量矩阵、注册与流控、分配失败、softirq/tasklet、工作队列与 irq_work、定时器、KVM irqfd/posted interrupt、观测与性能配方。 |
 
 ### 进程管理子章节
 
@@ -98,6 +99,25 @@
 | [12-balloon-fpr-and-overcommit.md](./memory-management/12-balloon-fpr-and-overcommit.md) | balloon、FPR、KSM、virtio-mem、内存热插拔 |
 | [13-observability.md](./memory-management/13-observability.md) | 本机 `/proc`、pagemap、DAMON、shrinker debugfs |
 | [14-perf-and-dev-practice.md](./memory-management/14-perf-and-dev-practice.md) | 按症状排障、page_owner |
+
+### 中断子章节
+
+| 文件 | 内容 |
+|------|------|
+| [README.md](./interrupts/README.md) | 章节目录、阅读顺序、与调度/锁/内存的边界 |
+| [01-overview.md](./interrupts/01-overview.md) | 总览：设备到 softirq 的总图 |
+| [02-x86-entry.md](./interrupts/02-x86-entry.md) | IDT、`common_interrupt`、中断栈、`irqentry_enter` |
+| [03-apic-and-vectors.md](./interrupts/03-apic-and-vectors.md) | LAPIC、IO-APIC、MSI/MSI-X、256 向量 |
+| [04-genirq-objects.md](./interrupts/04-genirq-objects.md) | `irq_desc`、`irq_data`、`irq_chip`、`irq_domain`、`irqaction` |
+| [05-irqdomain-hierarchy-and-matrix.md](./interrupts/05-irqdomain-hierarchy-and-matrix.md) | 向量域、中断重映射、`irq_matrix` |
+| [06-request-and-flow.md](./interrupts/06-request-and-flow.md) | `request_threaded_irq`、流控、亲和、热插拔 |
+| [07-irq-alloc-failure.md](./interrupts/07-irq-alloc-failure.md) | 向量与 IRTE 分配失败 |
+| [08-softirq-tasklet.md](./interrupts/08-softirq-tasklet.md) | softirq、`ksoftirqd`、tasklet |
+| [09-deferred-work-choice.md](./interrupts/09-deferred-work-choice.md) | 工作队列、中断线程、`irq_work` |
+| [10-timers.md](./interrupts/10-timers.md) | 时间轮、hrtimer、NO_HZ、LAPIC 定时器 |
+| [11-kvm-irq-virt.md](./interrupts/11-kvm-irq-virt.md) | 客户机 LAPIC、irqfd、posted interrupt |
+| [12-observability.md](./interrupts/12-observability.md) | `/proc`、debugfs、tracepoint、irqbalance |
+| [13-perf-analysis.md](./interrupts/13-perf-analysis.md) | 风暴、softirq 饱和、亲和与配方 |
 
 ## 约定
 
