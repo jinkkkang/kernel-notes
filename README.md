@@ -17,6 +17,7 @@
 | [scheduler/](./scheduler/) | **调度（大章）**：调度类链、`rq`/`cfs_rq`/`sched_entity`、EEVDF、入队与唤醒、负载均衡、cgroup cpu 衔接、RT/DL 边界、观测与性能分析配方。 |
 | [memory-management/](./memory-management/) | **内存管理（大章）**：物理页与 zone、buddy、SLUB、vmalloc、mm/VMA 与页表、缺页、页缓存、THP/hugetlb、回收与 OOM、KVM 二维页表与 mmu_notifier、balloon/FPR/热插拔、本机 `/proc` 观测与症状剧本。cgroup charge 与完整 VFS 另章。 |
 | [interrupts/](./interrupts/) | **中断（大章）**：x86-64 IDT 入口、APIC/MSI 向量、genirq 对象与层次域、向量矩阵、注册与流控、分配失败、softirq/tasklet、工作队列与 irq_work、定时器、KVM irqfd/posted interrupt、观测与性能配方。 |
+| [vfs/](./vfs/) | **虚拟文件系统（大章）**：`dentry` / `inode` / `file`、路径查找、fd 与 open/close、读写与页缓存交接、mmap、挂载与传播、dcache/icache、文件锁与 inotify/fanotify、tmpfs 走读、proc/sysfs/debugfs、观测与性能配方。页缓存和回写的内存侧见 memory-management。 |
 
 ### 进程管理子章节
 
@@ -118,6 +119,25 @@
 | [11-kvm-irq-virt.md](./interrupts/11-kvm-irq-virt.md) | 客户机 LAPIC、irqfd、posted interrupt |
 | [12-observability.md](./interrupts/12-observability.md) | `/proc`、debugfs、tracepoint、irqbalance |
 | [13-perf-analysis.md](./interrupts/13-perf-analysis.md) | 风暴、softirq 饱和、亲和与配方 |
+
+### VFS 子章节
+
+| 文件 | 内容 |
+|------|------|
+| [README.md](./vfs/README.md) | 章节目录、阅读顺序、与内存章 / 块层 / 容器化章的边界 |
+| [01-overview.md](./vfs/01-overview.md) | 系统调用到 VFS、具体文件系统、页缓存、块层 |
+| [02-core-objects.md](./vfs/02-core-objects.md) | `super_block`、`inode`、`dentry`、`file` 与四张 ops |
+| [03-path-lookup.md](./vfs/03-path-lookup.md) | `path_openat`、RCU-walk、dcache、挂载点、符号链接 |
+| [04-fd-and-open.md](./vfs/04-fd-and-open.md) | `files_struct`、`fdtable`、open/close、`struct file` 引用 |
+| [05-read-write.md](./vfs/05-read-write.md) | `read_iter` / `write_iter`、`kiocb`、缓冲 IO 与 Direct IO |
+| [06-mmap-and-file.md](./vfs/06-mmap-and-file.md) | `f_op->mmap`、`vm_operations_struct`、`filemap_fault` |
+| [07-mount-and-ns.md](./vfs/07-mount-and-ns.md) | `vfsmount`、新挂载 API、shared/slave/private/unbindable |
+| [08-dcache-icache.md](./vfs/08-dcache-icache.md) | dentry/inode LRU、shrinker、负 dentry |
+| [09-locks-and-notify.md](./vfs/09-locks-and-notify.md) | flock、POSIX 锁、lease、inotify、fanotify |
+| [10-tmpfs-walkthrough.md](./vfs/10-tmpfs-walkthrough.md) | tmpfs 上 open→read→write→fsync |
+| [11-pseudo-fs.md](./vfs/11-pseudo-fs.md) | procfs、sysfs/kernfs、debugfs |
+| [12-observability.md](./vfs/12-observability.md) | `/proc/sys/fs/*`、slab 名、tracepoint |
+| [13-perf-analysis.md](./vfs/13-perf-analysis.md) | 路径查找、dcache、fsync、DIO 的配方 |
 
 ## 约定
 
