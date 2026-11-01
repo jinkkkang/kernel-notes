@@ -18,6 +18,7 @@
 | [memory-management/](./memory-management/) | **内存管理（大章）**：物理页与 zone、buddy、SLUB、vmalloc、mm/VMA 与页表、缺页、页缓存、THP/hugetlb、回收与 OOM、KVM 二维页表与 mmu_notifier、balloon/FPR/热插拔、本机 `/proc` 观测与症状剧本。cgroup charge 与完整 VFS 另章。 |
 | [interrupts/](./interrupts/) | **中断（大章）**：x86-64 IDT 入口、APIC/MSI 向量、genirq 对象与层次域、向量矩阵、注册与流控、分配失败、softirq/tasklet、工作队列与 irq_work、定时器、KVM irqfd/posted interrupt、观测与性能配方。 |
 | [vfs/](./vfs/) | **虚拟文件系统（大章）**：`dentry` / `inode` / `file`、路径查找、fd 与 open/close、读写与页缓存交接、mmap、挂载与传播、dcache/icache、文件锁与 inotify/fanotify、tmpfs 走读、proc/sysfs/debugfs、观测与性能配方。页缓存和回写的内存侧见 memory-management。 |
+| [block-io/](./block-io/) | **块层与 IO（大章）**：`bio` / `request`、blk-mq、`none` / mq-deadline / kyber / bfq、多队列亲和、ioprio 与 cgroup io、回写与 fsync、Direct IO、io_uring、NVMe 与 virtio-blk 走读、错误与超时、观测与性能配方。页缓存回写的内存侧见 memory-management，cgroup 文件见 cgroup。 |
 
 ### 进程管理子章节
 
@@ -138,6 +139,29 @@
 | [11-pseudo-fs.md](./vfs/11-pseudo-fs.md) | procfs、sysfs/kernfs、debugfs |
 | [12-observability.md](./vfs/12-observability.md) | `/proc/sys/fs/*`、slab 名、tracepoint |
 | [13-perf-analysis.md](./vfs/13-perf-analysis.md) | 路径查找、dcache、fsync、DIO 的配方 |
+
+### 块层与 IO 子章节
+
+| 文件 | 内容 |
+|------|------|
+| [README.md](./block-io/README.md) | 章节目录、阅读顺序、与 VFS / 内存 / cgroup / 中断的边界 |
+| [01-overview.md](./block-io/01-overview.md) | VFS 到 bio、request、调度器、驱动的总图 |
+| [02-bio-and-bvec.md](./block-io/02-bio-and-bvec.md) | `struct bio`、`bio_vec`、拆分合并、`submit_bio` |
+| [03-request-and-blk-mq.md](./block-io/03-request-and-blk-mq.md) | `struct request`、`request_queue`、硬件队列、tag、`blk_mq_ops` |
+| [04-sched-none.md](./block-io/04-sched-none.md) | `none`：没有 elevator 的派发 |
+| [05-sched-mq-deadline.md](./block-io/05-sched-mq-deadline.md) | mq-deadline |
+| [06-sched-kyber.md](./block-io/06-sched-kyber.md) | kyber |
+| [07-sched-bfq.md](./block-io/07-sched-bfq.md) | BFQ |
+| [08-multiqueue-affinity.md](./block-io/08-multiqueue-affinity.md) | 软件/硬件队列、CPU 映射、IRQ 亲和 |
+| [09-ioprio-and-cgroup-io.md](./block-io/09-ioprio-and-cgroup-io.md) | ioprio，以及 cgroup io 交到 blk-cgroup |
+| [10-writeback-and-fsync.md](./block-io/10-writeback-and-fsync.md) | 回写到 bio，fsync 到设备 flush |
+| [11-direct-io.md](./block-io/11-direct-io.md) | `O_DIRECT`：`iov_iter` 到 bio |
+| [12-io-uring.md](./block-io/12-io-uring.md) | 环、SQE/CQE、固定缓冲、poll、`uring_cmd`，对照经典 AIO |
+| [13-nvme-walkthrough.md](./block-io/13-nvme-walkthrough.md) | NVMe PCI：`nvme_queue_rq` 到完成 IRQ |
+| [14-virtio-blk-walkthrough.md](./block-io/14-virtio-blk-walkthrough.md) | virtio-blk：`virtio_queue_rq` 到 `virtblk_done` |
+| [15-errors-timeout-retry.md](./block-io/15-errors-timeout-retry.md) | `blk_status_t`、超时、failfast |
+| [16-observability.md](./block-io/16-observability.md) | `/sys/block/*/stat`、blktrace、io_uring fdinfo |
+| [17-perf-analysis.md](./block-io/17-perf-analysis.md) | 队列深度、延迟、调度器与 io_uring 的配方 |
 
 ## 约定
 
