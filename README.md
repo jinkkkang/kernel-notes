@@ -51,6 +51,7 @@
 | [06-sleepable-locks.md](./locks-and-ds/06-sleepable-locks.md) | mutex / rwsem / seqlock |
 | [07-rcu.md](./locks-and-ds/07-rcu.md) | RCU 与 tasks RCU 衔接 |
 | [08-observability.md](./locks-and-ds/08-observability.md) | lockdep、lock_stat、踩坑清单 |
+| [demos/](./locks-and-ds/demos/) | 用户态 C 可直接 `gcc` 编译运行（`container_of`、list、hash/hlist、atomic 竞争）；`kmod_*.c` 只提供示例源码，不装载 |
 
 ### cgroup 子章节
 
@@ -66,6 +67,7 @@
 | [07-io-pids-misc.md](./cgroup/07-io-pids-misc.md) | io / pids / freezer / 其它 |
 | [08-psi-rstat.md](./cgroup/08-psi-rstat.md) | PSI 与 rstat |
 | [09-observability.md](./cgroup/09-observability.md) | 观测与本机实测 |
+| [demos/](./cgroup/demos/) | 用户态 shell 示意，默认 **DRY-RUN**（只打印命令）；不要在共享生产机上对不属于自己的树写限额 |
 
 ### 调度子章节
 
@@ -81,6 +83,7 @@
 | [07-cgroup-cpu.md](./scheduler/07-cgroup-cpu.md) | 与 cgroup cpu 衔接 |
 | [08-observability.md](./scheduler/08-observability.md) | 观测与本机实测 |
 | [09-perf-analysis.md](./scheduler/09-perf-analysis.md) | 性能分析配方 |
+| [demos/](./scheduler/demos/) | 只读采集脚本、一次 MEASURED 抓取样本（sampled on 6.12）、两个 bpftrace RECIPE（未跑） |
 
 ### 内存管理子章节
 
@@ -101,6 +104,7 @@
 | [12-balloon-fpr-and-overcommit.md](./memory-management/12-balloon-fpr-and-overcommit.md) | balloon、FPR、KSM、virtio-mem、内存热插拔 |
 | [13-observability.md](./memory-management/13-observability.md) | 本机 `/proc`、pagemap、DAMON、shrinker debugfs |
 | [14-perf-and-dev-practice.md](./memory-management/14-perf-and-dev-practice.md) | 按症状排障、page_owner |
+| [demos/](./memory-management/demos/) | 用户态 `maps`/`smaps_rollup` 与 minor fault 示例（写笔记时本机编过跑过）；`kmod_slab_cache.c` 只提供源码，不 `insmod` |
 
 ### 中断子章节
 
