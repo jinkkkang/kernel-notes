@@ -17,7 +17,7 @@
 | [scheduler/](./scheduler/) | **调度（大章）**：调度类链、`rq`/`cfs_rq`/`sched_entity`、EEVDF、入队与唤醒、负载均衡、cgroup cpu 衔接、RT/DL 边界、观测与性能分析配方。 |
 | [memory-management/](./memory-management/) | **内存管理（大章）**：物理页与 zone、buddy、SLUB、vmalloc、mm/VMA 与页表、缺页、页缓存、THP/hugetlb、回收与 OOM、KVM 二维页表与 mmu_notifier、balloon/FPR/热插拔、本机 `/proc` 观测与症状剧本。cgroup charge 与完整 VFS 另章。 |
 | [interrupts/](./interrupts/) | **中断（大章）**：x86-64 IDT 入口、APIC/MSI 向量、genirq 对象与层次域、向量矩阵、注册与流控、分配失败、softirq/tasklet、工作队列与 irq_work、定时器、KVM irqfd/posted interrupt、观测与性能配方。 |
-| [vfs/](./vfs/) | **虚拟文件系统（大章）**：`dentry` / `inode` / `file`、路径查找、fd 与 open/close、读写与页缓存交接、mmap、挂载与传播、dcache/icache、文件锁与 inotify/fanotify、tmpfs 走读、proc/sysfs/debugfs、观测与性能配方。页缓存和回写的内存侧见 memory-management。 |
+| [vfs/](./vfs/) | **虚拟文件系统（大章）**：`dentry` / `inode` / `file`、路径查找、fd 与 open/close、读写与页缓存交接、splice/sendfile、mmap、挂载与传播、dcache/icache、文件锁与 inotify/fanotify、tmpfs 走读、proc/sysfs/debugfs、观测与性能配方。页缓存和回写的内存侧见 memory-management。 |
 | [block-io/](./block-io/) | **块层与 IO（大章）**：`bio` / `request`、blk-mq、`none` / mq-deadline / kyber / bfq、多队列亲和、ioprio 与 cgroup io、回写与 fsync、Direct IO、io_uring、NVMe 与 virtio-blk 走读、错误与超时、观测与性能配方。页缓存回写的内存侧见 memory-management，cgroup 文件见 cgroup。 |
 | [containerization/](./containerization/) | **容器化（大章）**：八种命名空间与 `nsproxy`、`pivot_root`、user ns 映射、net ns（veth/CNI 只点到）、容器里的 cgroup、overlayfs、FUSE、runc v1.5.2 创建路径、seccomp/能力/LSM 边界、观测与坑。PID 分配见 process-management，控制器见 cgroup，挂载传播见 vfs。 |
 
@@ -135,6 +135,7 @@
 | [03-path-lookup.md](./vfs/03-path-lookup.md) | `path_openat`、RCU-walk、dcache、挂载点、符号链接 |
 | [04-fd-and-open.md](./vfs/04-fd-and-open.md) | `files_struct`、`fdtable`、open/close、`struct file` 引用 |
 | [05-read-write.md](./vfs/05-read-write.md) | `read_iter` / `write_iter`、`kiocb`、缓冲 IO 与 Direct IO |
+| [05b-splice-and-zerocopy.md](./vfs/05b-splice-and-zerocopy.md) | `splice` / `sendfile` / `copy_file_range` 与管道槽（读序在读写之后、mmap 之前） |
 | [06-mmap-and-file.md](./vfs/06-mmap-and-file.md) | `f_op->mmap`、`vm_operations_struct`、`filemap_fault` |
 | [07-mount-and-ns.md](./vfs/07-mount-and-ns.md) | `vfsmount`、新挂载 API、shared/slave/private/unbindable |
 | [08-dcache-icache.md](./vfs/08-dcache-icache.md) | dentry/inode LRU、shrinker、负 dentry |
