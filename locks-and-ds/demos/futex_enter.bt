@@ -1,0 +1,19 @@
+#!/usr/bin/env bpftrace
+/* RECIPE: 按 op 统计进入 futex(2) 的次数。
+ * 需要 bpftrace、CAP_BPF / root，以及 CONFIG_FTRACE_SYSCALLS。
+ * 本文件没有在笔记机器上执行（无 bpftrace）。
+ *
+ * 事件 tracepoint:syscalls:sys_enter_futex 的字段来自
+ * kernel/trace/trace_syscalls.c:270 的 syscall_enter_define_fields：
+ * 参数名就是 SYSCALL_DEFINE6(futex) 的形参
+ * （kernel/futex/syscalls.c:192）：uaddr, op, val, utime, uaddr2, val3，
+ * 另有 __syscall_nr。对照 Linux v6.6.160。
+ *
+ * op 的低 7 位是命令（FUTEX_WAIT=0, FUTEX_WAKE=1, FUTEX_WAIT_BITSET=9），
+ * FUTEX_PRIVATE_FLAG=128，FUTEX_CLOCK_REALTIME=256。
+ * 见 include/uapi/linux/futex.h。
+ */
+tracepoint:syscalls:sys_enter_futex
+{
+	@[args->op] = count();
+}

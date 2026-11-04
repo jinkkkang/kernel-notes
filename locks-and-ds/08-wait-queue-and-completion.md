@@ -4,9 +4,9 @@
 
 > 头文件：`include/linux/wait.h`、`include/linux/completion.h`、`include/linux/swait.h`。
 > 实现：`kernel/sched/wait.c`、`kernel/sched/completion.c`、`kernel/sched/swait.c`。
-> 读序插在 [06 可睡眠锁](./06-sleepable-locks.md) 与 [07 RCU](./07-rcu.md) 之间。章末观测仍是 [`08-observability.md`](./08-observability.md)（文件名暂不改，读序最后）。
+> 读序插在 [06 可睡眠锁](./06-sleepable-locks.md) 与 [07 RCU](./07-rcu.md) 之间。下一篇是 [09 futex](./09-futex.md)。章末观测仍是 [`08-observability.md`](./08-observability.md)（文件名暂不改，读序最后）。
 
-本篇只写通用睡/醒和 completion。用户态 futex、`wait_on_bit` 的哈希表、`wait_woken` 那套自定义协议，点到名字为止。
+本篇只写通用睡/醒和 completion。用户态 futex 见 [09](./09-futex.md)。`wait_on_bit` 的哈希表、`wait_woken` 那套自定义协议，点到名字为止。
 
 ---
 
@@ -350,7 +350,7 @@ return timeout ?: 1;                       /* 中文：刚好剩 0 个 jiffy 但
 | 一个可反复变化的条件，醒来必须重判表达式 | `wait_event*` + `wake_up*`。条件变量由你自己放 |
 | 「做完了」一次或若干次，晚到的等待者也要看见 | `completion`。`done` 替你记着 |
 | 读者不停，写者等旧读者走完 | RCU（07）。那不是等待队列 |
-| 用户态地址上的睡眠 | 不在本篇 |
+| 用户态地址上的睡眠 | futex 的 WAIT/WAKE，见 [09](./09-futex.md) |
 
 `wait_event` 默认非独占：`wake_up` 会叫整队。完成事件要一个一个交接时，completion 的 `swake_up_locked` 本来就是一次一个；wait queue 上则把等待者标成 `WQ_FLAG_EXCLUSIVE`。
 
@@ -364,7 +364,7 @@ return timeout ?: 1;                       /* 中文：刚好剩 0 个 jiffy 但
 
 正确性仍然先看 lockdep，热点再看 lock_stat / trace。工具和「原子上下文里睡觉」那条日志在 [08-observability](./08-observability.md)（文件名 `08-observability.md`，读序放在本章和 RCU 之后）。本篇不另起 ftrace 课。
 
-卡住时先看任务状态。进程章 [10](../process-management/10-observability.md) 的 `wchan` 会停在 `schedule`、`wait_for_completion` 这一类符号上。那只说明人睡在等待队列或 completion 里；条件是谁改的、有没有人 `wake_up` / `complete`，回到本篇的对侧纪律。用户态 futex 的 `wchan`（例如 `futex_wait_queue`）不是这条路径。
+卡住时先看任务状态。进程章 [10](../process-management/10-observability.md) 的 `wchan` 会停在 `schedule`、`wait_for_completion` 这一类符号上。那只说明人睡在等待队列或 completion 里；条件是谁改的、有没有人 `wake_up` / `complete`，回到本篇的对侧纪律。用户态 futex 的 `wchan`（例如 `futex_wait_queue`）见 [09](./09-futex.md)。
 
 ```bash
 # RECIPE：未在本机执行。需要能挂 kprobe 的权限。
@@ -431,4 +431,4 @@ make -f Makefile.example
 
 ---
 
-*下一节：[RCU](./07-rcu.md)。观测、lockdep 与踩坑清单在 [`08-observability.md`](./08-observability.md)（现文件名 08，读序最后）。*
+*下一节：[futex](./09-futex.md)（文件名 09，读序在本节之后、RCU 之前）。观测、lockdep 与踩坑清单在 [`08-observability.md`](./08-observability.md)（现文件名 08，读序最后）。*
