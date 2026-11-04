@@ -286,4 +286,4 @@ fdatasync                           :223    do_fsync(fd, 1)
 
 ---
 
-**导航**：[← fd 与 open](./04-fd-and-open.md) · [目录](./README.md) · [mmap →](./06-mmap-and-file.md)
+**导航**：[← fd 与 open](./04-fd-and-open.md) · [目录](./README.md) · [splice →](./05b-splice-and-zerocopy.md)

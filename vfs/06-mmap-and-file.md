@@ -175,4 +175,4 @@ folio->mapping 已经不是这个文件：解锁，回到 retry_find          :3
 
 ---
 
-**导航**：[← 读写](./05-read-write.md) · [目录](./README.md) · [挂载 →](./07-mount-and-ns.md)
+**导航**：[← splice](./05b-splice-and-zerocopy.md) · [目录](./README.md) · [挂载 →](./07-mount-and-ns.md)

@@ -1,0 +1,35 @@
+#!/usr/bin/env bpftrace
+/* RECIPE: 数 splice / sendfile64 / copy_file_range 的进入次数。
+ * 需要 bpftrace、CAP_BPF / root，以及 CONFIG_FTRACE_SYSCALLS、CONFIG_KPROBES。
+ * 本文件没有在笔记机器上执行（无 bpftrace；kprobe_events Permission denied）。
+ *
+ * do_splice 不是 static，定义在 fs/splice.c:1243。
+ * do_sendfile 是 static（fs/read_write.c:1180），kallsyms 里不一定有这个名字，
+ * 所以这里不挂 kprobe:do_sendfile。x86-64 的 syscall_64.tbl 把
+ * sendfile 指到 sys_sendfile64，跟踪点跟着 SYSCALL_DEFINE4(sendfile64)。
+ *
+ * 字段来自 kernel/trace/trace_syscalls.c:270 的 syscall_enter_define_fields：
+ * 参数名就是对应 SYSCALL_DEFINE 的形参。对照 Linux v6.6.160。
+ *   splice:          fd_in, off_in, fd_out, off_out, len, flags
+ *   sendfile64:      out_fd, in_fd, offset, count
+ *   copy_file_range: fd_in, off_in, fd_out, off_out, len, flags
+ */
+kprobe:do_splice
+{
+	@[comm] = count();
+}
+
+tracepoint:syscalls:sys_enter_splice
+{
+	@splice_calls = count();
+}
+
+tracepoint:syscalls:sys_enter_sendfile64
+{
+	@sendfile_calls = count();
+}
+
+tracepoint:syscalls:sys_enter_copy_file_range
+{
+	@copy_file_range_calls = count();
+}
