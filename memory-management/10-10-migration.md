@@ -58,7 +58,7 @@ migrate_pages(from, get_new_folio, ...)   # migrate.c:1903
 
 热插拔那条在 [12.9](./12-balloon-fpr-and-overcommit.md)。NUMA 策略本身在 [03-08-numa-policy.md](./03-08-numa-policy.md)，这里只标它最后也进 `migrate_pages`。compaction 怎么把页隔离出来再调到这里，在 [03-07-high-order-and-compaction.md](./03-07-high-order-and-compaction.md)。回收降级是 `shrink_folio_list` 把 folio 放进 `demote_folios` 之后的 `demote_folio_list`（`vmscan.c:1656`），分配函数是 `alloc_demote_folio`（`:1621`），见 [02](./10-02-lru-classic.md)。
 
-`migrate_misplaced_page`（`:2565`）是 NUMA balancing 迁一页的入口。文件页被多个进程以可执行方式映射，或者文件页是脏的，就直接放弃（`:2579-2588`）。注释写脏文件页在 `MIGRATE_ASYNC` 下不是每个文件系统都能搬。
+`migrate_misplaced_page`（`:2565`）是 NUMA balancing 迁一页的入口。文件页被多个进程以可执行方式映射，或者文件页是脏的，就直接放弃（`:2579-2588`）。注释写脏文件页在 `MIGRATE_ASYNC` 下不是每个文件系统都能搬。谁把 PTE 改成 hint、缺页里如何决定调用它，见 [scheduler/05b](../scheduler/05b-numa-balancing.md)。
 
 ---
 

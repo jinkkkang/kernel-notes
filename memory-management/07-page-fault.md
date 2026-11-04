@@ -96,6 +96,8 @@ pte_protnone 且 VMA 可访问 → do_numa_page # :4806
   否则置 dirty / young，更新 TLB
 ```
 
+`do_numa_page` 这一支的闭环（扫描、记账、迁页、放置）在 [scheduler/05b](../scheduler/05b-numa-balancing.md)。
+
 `do_pte_missing` 只有一个判断：
 
 ```c
@@ -278,7 +280,7 @@ identify_page_state
 | `wp_page_reuse` | `mm/memory.c:3026` | 独占页直接改 PTE |
 | `do_swap_page` | `mm/memory.c:3739` | swap、migration、hwpoison、PTE marker |
 | `handle_pte_marker` | `mm/memory.c:3708` | uffd-wp / poison 标记 |
-| `do_numa_page` | `mm/memory.c:4806` | `PROT_NONE` 的 NUMA hint |
+| `do_numa_page` | `mm/memory.c:4806` | `PROT_NONE` 的 NUMA hint。闭环见 [scheduler/05b](../scheduler/05b-numa-balancing.md) |
 | `filemap_fault` | `mm/filemap.c:3293` | 页缓存缺页 |
 | `hugetlb_fault` | `mm/hugetlb.c:6085` | hugetlb |
 | `handle_userfault` | `fs/userfaultfd.c:429` | 把缺页交给用户态 |
