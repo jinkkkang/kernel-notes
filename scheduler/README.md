@@ -6,7 +6,7 @@
 
 ## 阅读顺序
 
-`01 → 02 → 03 → 04 → 07 → 05 → 08 → 09 → 06`
+`01 → 02 → 03 → 04 → 07 → 05 → 05b → 08 → 09 → 06`
 
 先把 fair 主链和观测跑通，再扫其它调度类。
 
@@ -19,6 +19,7 @@
 | [03-eevdf.md](./03-eevdf.md) | EEVDF：`vruntime` / `deadline` / `vlag` / eligible / `pick_eevdf` | **厚** |
 | [04-enqueue-wakeup.md](./04-enqueue-wakeup.md) | 入队出队、`try_to_wake_up`、唤醒延迟挂钩 | 中 |
 | [05-load-balance.md](./05-load-balance.md) | PELT、`load_balance`、亲和与 cpuset | 中 |
+| [05b-numa-balancing.md](./05b-numa-balancing.md) | sched ↔ mm：NUMA balancing 闭环（扫描、hint fault、迁页、首选节点） | 中 |
 | [06-other-classes.md](./06-other-classes.md) | RT / DL / idle / stop（点到） | **薄** |
 | [07-cgroup-cpu.md](./07-cgroup-cpu.md) | 与 cgroup cpu / `task_group` 衔接 | 中 |
 | [08-observability.md](./08-observability.md) | `/proc`、debugfs、schedstat、tracepoint、PSI、本机样本 | **厚** |
@@ -33,14 +34,14 @@
 | 完整上下文切换 mm/寄存器细节 | 已在 process-management/08 |
 | 完整拓扑 / energy / cpufreq 深挖 | 电源与拓扑另开 |
 | DL/RT 算法细节 | 06 只给边界与选用场景 |
-| 完整 MM / 缺页 | memory-management |
+| 完整 MM / 缺页 / `migrate_pages` 批处理 | memory-management。NUMA balancing 闭环在 [05b](./05b-numa-balancing.md)，不重写缺页和迁移算法 |
 
 ## 源码地图（先认门牌）
 
 | 路径 | 角色 |
 |------|------|
 | `kernel/sched/core.c` | `__schedule`、`try_to_wake_up`、`pick_next_task` |
-| `kernel/sched/fair.c` | EEVDF、`enqueue/dequeue_entity`、`load_balance` |
+| `kernel/sched/fair.c` | EEVDF、`enqueue/dequeue_entity`、`load_balance`、NUMA 扫描与记账（[05b](./05b-numa-balancing.md)） |
 | `kernel/sched/sched.h` | `rq` / `cfs_rq` / `task_group` / `sched_class` |
 | `include/linux/sched.h` | `sched_entity`、`task_struct` 调度字段 |
 | `kernel/sched/pelt.c` | PELT 负载跟踪 |

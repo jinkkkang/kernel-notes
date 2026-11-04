@@ -46,7 +46,7 @@ struct mempolicy {
 | 5 | `MPOL_PREFERRED_MANY` | 一组优先 node。第一趟只在这组里试，失败再放开 |
 | 6 | `MPOL_MAX` | 枚举的上界，不是一种策略 |
 
-`MPOL_F_STATIC_NODES`（`1 << 15`）：用户给的节点号不随 cpuset 重新解释。`MPOL_F_RELATIVE_NODES`（`1 << 14`）：当成相对 cpuset 允许集合的偏移。`sanitize_mpol_flags`（`mempolicy.c:1452`）拒绝这两个同时设。空节点的 `MPOL_PREFERRED` 再带其中任何一个，`mpol_new`（`:266`）在 `:286-290` 返回 `-EINVAL`；节点为空、又不带这两个标志时，模式改成 `MPOL_LOCAL`。`MPOL_F_NUMA_BALANCING`（`1 << 13`）：只允许配在 `MPOL_BIND` 上，否则 `set_mempolicy` / `mbind` 返回 `-EINVAL`（`:1461-1464`）。配上之后内核再把内部的 `MPOL_F_MOF | MPOL_F_MORON` 设上，让 NUMA balancing 可以在缺页时迁移。
+`MPOL_F_STATIC_NODES`（`1 << 15`）：用户给的节点号不随 cpuset 重新解释。`MPOL_F_RELATIVE_NODES`（`1 << 14`）：当成相对 cpuset 允许集合的偏移。`sanitize_mpol_flags`（`mempolicy.c:1452`）拒绝这两个同时设。空节点的 `MPOL_PREFERRED` 再带其中任何一个，`mpol_new`（`:266`）在 `:286-290` 返回 `-EINVAL`；节点为空、又不带这两个标志时，模式改成 `MPOL_LOCAL`。`MPOL_F_NUMA_BALANCING`（`1 << 13`）：只允许配在 `MPOL_BIND` 上，否则 `set_mempolicy` / `mbind` 返回 `-EINVAL`（`:1461-1464`）。配上之后内核再把内部的 `MPOL_F_MOF | MPOL_F_MORON` 设上，让 NUMA balancing 可以在缺页时迁移。扫描到放置的闭环在 [scheduler/05b](../scheduler/05b-numa-balancing.md)。
 
 `MPOL_F_SHARED`、`MPOL_F_MOF`、`MPOL_F_MORON` 在 `uapi/linux/mempolicy.h:63-65`，是内核内部标志，不从用户态的 mode 参数直接传进来。
 

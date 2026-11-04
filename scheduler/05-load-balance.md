@@ -55,7 +55,7 @@ NUMA 调度域会带上 `SD_SERIALIZE`（`kernel/sched/topology.c:1646`）。`re
 
 1. `/proc/<pid>/status` 里的 `Cpus_allowed` / `Cpus_allowed_list` 是不是被收成了一颗核  
 2. cpuset 是不是把负载关进小岛，岛外空着  
-3. NUMA 偏好是不是把算力和内存拆开（`rq->nr_numa_running` 这一路，深挖另章）  
+3. NUMA 偏好是不是把算力和内存拆开（`rq->nr_numa_running` 这一路，见 [05b](./05b-numa-balancing.md)）  
 4. active balance 有没有因为亲和、钉核、`nr_pinned` 而推不动
 
 ---
@@ -93,4 +93,4 @@ NUMA 调度域会带上 `SD_SERIALIZE`（`kernel/sched/topology.c:1646`）。`re
 
 ---
 
-**导航**：[← 入队与唤醒](./04-enqueue-wakeup.md) · [章节目录](./README.md) · [观测 →](./08-observability.md)
+**导航**：[← 入队与唤醒](./04-enqueue-wakeup.md) · [章节目录](./README.md) · [NUMA balancing →](./05b-numa-balancing.md)

@@ -132,4 +132,4 @@ PSI 升高表示「有人 runnable 却没上 CPU」。它不分是 fair 在抢�
 
 ---
 
-**导航**：[← 负载均衡](./05-load-balance.md) · [章节目录](./README.md) · [性能分析 →](./09-perf-analysis.md)
+**导航**：[← NUMA balancing](./05b-numa-balancing.md) · [章节目录](./README.md) · [性能分析 →](./09-perf-analysis.md)
