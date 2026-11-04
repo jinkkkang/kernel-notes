@@ -6,7 +6,7 @@
 ## 环境（生成笔记时的 box）
 
 用户态四份程序的粘贴输出是 **sampled on 6.12**（Linux 6.12.94+，gcc 14.2.0，2026-10-22）。
-内核模块按 Linux **v6.6.160** 的 `include/linux/list.h`、`include/linux/idr.h` 对过符号，没有在 6.6 上 `make` / `insmod`。
+内核模块按 Linux **v6.6.160** 的 `include/linux/list.h`、`include/linux/idr.h`、`include/linux/completion.h` 对过符号，没有在 6.6 上 `make` / `insmod`。
 
 ## 用户态（优先跑这些）
 
@@ -40,6 +40,7 @@ make -f Makefile.example
 |---|---|---|
 | `kmod_list_example.c` | 02 | `LIST_HEAD` + `list_for_each_entry` |
 | `kmod_idr_example.c` | 03 | `idr_alloc` / `idr_find` / `idr_remove`；`end == 0` 在 v6.6.160 表示最大 ID 为 `INT_MAX` |
+| `kmod_completion_timeout.c` | [08-wait-queue-and-completion](../08-wait-queue-and-completion.md) | `complete` 之后 `wait_for_completion_timeout` 返回剩余 jiffies；`reinit_completion` 后空等返回 0 |
 | `Makefile.example` | — | out-of-tree 模块 Makefile 模板 |
 
 **不要**把这些模块当生产代码加载。笔记里的内核 API 钉 **v6.6.160**。

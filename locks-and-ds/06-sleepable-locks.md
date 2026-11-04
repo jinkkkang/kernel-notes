@@ -230,7 +230,7 @@ do {
 | 读多写少、读写互斥语义清晰 | **rwsem** |
 | 读极多写极少、写得起延迟 | **percpu-rwsem** |
 | 读多写极少、数据无跟随指针、可重试 | **seqlock / seqcount** |
-| 读极多、写者可复制更新结构 | **RCU**（下一节） |
+| 读极多、写者可复制更新结构 | **RCU**（[07](./07-rcu.md)） |
 
 ```text
 会睡眠吗？
@@ -256,4 +256,4 @@ do {
 
 ---
 
-*下一节：RCU——读者几乎不排队的发布-订阅式同步。*
+*下一节：[等待队列与 completion](./08-wait-queue-and-completion.md)（文件名 08，读序在 RCU 之前）。mutex / rwsem 的 `wait_list` 仍留在本节。*
