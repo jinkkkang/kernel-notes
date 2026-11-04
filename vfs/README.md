@@ -56,7 +56,7 @@
 | `task_struct->files` 这张表怎么用 | `task_struct` 本身：[process-management/02-task-struct.md](../process-management/02-task-struct.md) |
 | 路径查找里的 RCU 读锁 | RCU 原语：[locks-and-ds/07-rcu.md](../locks-and-ds/07-rcu.md) |
 | `io_uring` 在 `file_operations` 上有 `uring_cmd` 指针 | 提交、完成、固定缓冲留给以后的 block-io 章，本章不展开 |
-| FUSE、overlayfs 的层叠语义 | 留给以后的容器化章。本章只在 `dentry_operations.d_real` 上点到这个钩子存在 |
+| FUSE 请求队列、overlayfs 的 copy-up 与 whiteout | [containerization/](../containerization/README.md)。本章只在 `dentry_operations.d_real` 上点到这个钩子存在 |
 
 块层的 `bio` / `request` 不在本章推导。磁盘文件系统的 `a_ops->read_folio` 最终会提交 bio；tmpfs 没有这一步。
 
@@ -86,7 +86,7 @@
 ## 未覆盖
 
 - ext4 / xfs / btrfs 的目录项、日志、分配组
-- FUSE 请求队列、overlayfs 的 whiteout 与 copy-up
+- FUSE 请求队列、overlayfs 的 whiteout 与 copy-up（见 [containerization/](../containerization/README.md)）
 - `io_uring` 的提交环与固定文件表
 - NFS/9p 的网络查找
 - `fanotify` 权限事件在 LSM 里的完整裁决
