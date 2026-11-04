@@ -116,7 +116,7 @@ struct mm_struct {
 
 		unsigned long total_vm;		/* 映射的总页数 */
 		unsigned long locked_vm;	/* VM_LOCKED 的页 */
-		atomic64_t pinned_vm;		/* 长期 pin（get_user_pages 一类）的页 */
+		atomic64_t pinned_vm;		/* 引用被长期抬高的页数。谁加见 07b */
 		unsigned long data_vm;		/* VM_WRITE & ~VM_SHARED & ~VM_STACK */
 		unsigned long exec_vm;		/* VM_EXEC & ~VM_WRITE & ~VM_STACK */
 		unsigned long stack_vm;	/* VM_STACK */
@@ -129,6 +129,8 @@ struct mm_struct {
 
 		spinlock_t arg_lock;		/* 保护下面这组起止地址 */
 ```
+
+`pinned_vm` 打进 `/proc/pid/status` 的 `VmPin`。谁把页数加进去，以及它和 `FOLL_PIN` 的引用怎么分开，在 [07b](./07b-gup-and-pin.md)。
 
 ### 段、auxv、RSS
 

@@ -18,6 +18,7 @@
 5. [vmalloc 与内核虚拟地址](./05-vmalloc-and-kernel-va.md)
 6. [mm 与 VMA](./06-mm-and-vma.md)
 7. [缺页](./07-page-fault.md)
+7b. [GUP 与 pin](./07b-gup-and-pin.md)
 8. [页缓存与回写（只写内存侧）](./08-page-cache-and-writeback.md)
 9. [THP 与 hugetlb](./09-thp-and-hugetlb.md)
 10. [回收、swap、OOM](./10-00-reclaim.md)
@@ -58,6 +59,8 @@
 | `mm/page_alloc.c` | `__alloc_pages`，buddy |
 | `mm/mmap.c` | `mmap` / `brk`，改 VMA |
 | `mm/memory.c` | `handle_mm_fault`、`do_anonymous_page` |
+| `mm/gup.c` | `get_user_pages*` / `pin_user_pages*`。公开 `FOLL_*` 在 `mm_types.h`，`FOLL_PIN` 在 `mm/internal.h` |
+| `Documentation/core-api/pin_user_pages.rst` | get 与 pin 的释放纪律、`GUP_PIN_COUNTING_BIAS` |
 | `mm/slub.c` | 内核小对象 `kmalloc`。用户态 `malloc` 见 [00](./00-life-of-malloc.md) |
 
 ## 建议阅读顺序
@@ -69,7 +72,7 @@
   → 01 总览
   → 02 物理布局（page/zone/node 的名词，加上 buddy 的阶、拆、合；分配和释放的调用链在 03）
   → 03 页分配（03-00-page-alloc.md）→ 04 SLUB → 05 vmalloc
-  → 06 mm/VMA → 07 缺页 → 08 页缓存
+  → 06 mm/VMA → 07 缺页 → 07b GUP/pin → 08 页缓存
   → 09 THP/hugetlb
   → 10 回收（10-00-reclaim.md，先总入口再经典 LRU，然后 MGLRU）
   → 11 KVM 二维页表 → 12 balloon/FPR

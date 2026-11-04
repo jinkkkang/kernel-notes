@@ -3,7 +3,7 @@
 **结论**：用户访问一个还没有 PTE，或者 PTE 权限不够的地址，x86 从 `exc_page_fault` 进到 `handle_mm_fault()`。匿名页向伙伴分配器要 folio，或者先映全局零页；文件页先找页缓存；写只读的私有页会走 COW。hugetlb 在入口就分叉，不走普通的 PMD/PTE。
 
 > 源码：Linux v6.6.160。主文件 `mm/memory.c`。x86 入口 `arch/x86/mm/fault.c`。文件缺页的页缓存半边在 `mm/filemap.c`。
-> 导航：[上一节 mm/VMA](./06-mm-and-vma.md) · [目录](./README.md) · [下一节 页缓存](./08-page-cache-and-writeback.md)
+> 导航：[上一节 mm/VMA](./06-mm-and-vma.md) · [目录](./README.md) · [下一节 GUP 与 pin](./07b-gup-and-pin.md)
 
 `handle_mm_fault` 进来时已经拿着 per-VMA 读锁或 `mmap_lock`。`FAULT_FLAG_VMA_LOCK`（`mm_types.h:1344`，值 `1 << 12`）标明是哪一把。函数里有一句：缺页处理如果放下了 `mmap_lock`，`vma` 可能已经被释放（`memory.c:5326`）。`do_fault` 的注释写得更直：锁放下之后，别的线程可能已经 `munmap`，`vma` 作废（`:4742`）。返回 `VM_FAULT_RETRY` 时调用者要重新查找 VMA。
 
@@ -296,4 +296,4 @@ identify_page_state
 
 ---
 
-[上一节 mm/VMA](./06-mm-and-vma.md) · [目录](./README.md) · [下一节 页缓存](./08-page-cache-and-writeback.md)
+[上一节 mm/VMA](./06-mm-and-vma.md) · [目录](./README.md) · [下一节 GUP 与 pin](./07b-gup-and-pin.md)

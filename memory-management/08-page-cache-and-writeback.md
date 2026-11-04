@@ -4,7 +4,7 @@
 
 > 源码：Linux v6.6.160。结构在 `include/linux/fs.h`、`include/linux/mm_types.h`、`include/linux/writeback.h`、`include/linux/backing-dev-defs.h`。查找和缺页在 `mm/filemap.c`。脏页限速在 `mm/page-writeback.c`。回写线程在 `fs/fs-writeback.c`。
 > 文件系统怎么实现 `a_ops->read_folio` / `writepages`，本章不展开。
-> 导航：[上一节 缺页](./07-page-fault.md) · [目录](./README.md) · [下一节 THP](./09-thp-and-hugetlb.md)
+> 导航：[上一节 GUP 与 pin](./07b-gup-and-pin.md) · [目录](./README.md) · [下一节 THP](./09-thp-and-hugetlb.md)
 
 ---
 
@@ -756,4 +756,4 @@ shmem_get_folio_gfp                         # mm/shmem.c:1948
 
 ---
 
-[上一节 缺页](./07-page-fault.md) · [目录](./README.md) · [下一节 THP](./09-thp-and-hugetlb.md)
+[上一节 GUP 与 pin](./07b-gup-and-pin.md) · [目录](./README.md) · [下一节 THP](./09-thp-and-hugetlb.md)
