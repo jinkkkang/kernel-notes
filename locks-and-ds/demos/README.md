@@ -5,8 +5,10 @@
 
 ## 环境（生成笔记时的 box）
 
-用户态四份程序的粘贴输出是 **sampled on 6.12**（Linux 6.12.94+，gcc 14.2.0，2026-10-22）。
+用户态 `01`–`04` 的粘贴输出是 **sampled on 6.12**（Linux 6.12.94+，gcc 14.2.0，2026-10-22）。
+`05_pthread_mutex_futex` 也是 **sampled on 6.12**（Linux 6.12.94+，gcc 13.3.0，glibc 2.39，strace 6.8，2026-11-04），输出在 [09-futex](../09-futex.md)。
 内核模块按 Linux **v6.6.160** 的 `include/linux/list.h`、`include/linux/idr.h`、`include/linux/completion.h` 对过符号，没有在 6.6 上 `make` / `insmod`。
+`futex_enter.bt` 的 trace 字段按 v6.6.160 的 `SYSCALL_DEFINE6(futex)` 对过，没有跑 bpftrace。
 
 ## 用户态（优先跑这些）
 
@@ -17,6 +19,7 @@ gcc -Wall -O2 -o 01_container_of 01_container_of.c && ./01_container_of
 gcc -Wall -O2 -o 02_list 02_list.c && ./02_list
 gcc -Wall -O2 -o 03_hash_hlist 03_hash_hlist.c && ./03_hash_hlist
 gcc -Wall -O2 -pthread -o 04_atomic_race 04_atomic_race.c && ./04_atomic_race
+gcc -Wall -O2 -pthread -o 05_pthread_mutex_futex 05_pthread_mutex_futex.c && ./05_pthread_mutex_futex
 ```
 
 | 文件 | 对应章节 | 演示什么 |
@@ -25,6 +28,8 @@ gcc -Wall -O2 -pthread -o 04_atomic_race 04_atomic_race.c && ./04_atomic_race
 | `02_list.c` | [02-list](../02-list.md) | 侵入式 `list_head`：add / del / for_each / `_safe` |
 | `03_hash_hlist.c` | [03-trees-maps](../03-trees-maps.md) | 哈希桶 + `hlist` 风格 `pprev` |
 | `04_atomic_race.c` | [04-atomics-refcount](../04-atomics-refcount.md) | 普通 RMW 丢更新 vs `_Atomic` |
+| `05_pthread_mutex_futex.c` | [09-futex](../09-futex.md) | pthread mutex：无争用不进 `futex`，争用才 `FUTEX_WAIT_PRIVATE` / `FUTEX_WAKE_PRIVATE` |
+| `futex_enter.bt` | [09-futex](../09-futex.md) | RECIPE：`tracepoint:syscalls:sys_enter_futex`，按 `args->op` 计数。未跑 |
 
 ## 内核模块示例（可选编译）
 
