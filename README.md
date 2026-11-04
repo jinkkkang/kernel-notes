@@ -19,6 +19,7 @@
 | [interrupts/](./interrupts/) | **中断（大章）**：x86-64 IDT 入口、APIC/MSI 向量、genirq 对象与层次域、向量矩阵、注册与流控、分配失败、softirq/tasklet、工作队列与 irq_work、定时器、KVM irqfd/posted interrupt、观测与性能配方。 |
 | [vfs/](./vfs/) | **虚拟文件系统（大章）**：`dentry` / `inode` / `file`、路径查找、fd 与 open/close、读写与页缓存交接、mmap、挂载与传播、dcache/icache、文件锁与 inotify/fanotify、tmpfs 走读、proc/sysfs/debugfs、观测与性能配方。页缓存和回写的内存侧见 memory-management。 |
 | [block-io/](./block-io/) | **块层与 IO（大章）**：`bio` / `request`、blk-mq、`none` / mq-deadline / kyber / bfq、多队列亲和、ioprio 与 cgroup io、回写与 fsync、Direct IO、io_uring、NVMe 与 virtio-blk 走读、错误与超时、观测与性能配方。页缓存回写的内存侧见 memory-management，cgroup 文件见 cgroup。 |
+| [containerization/](./containerization/) | **容器化（大章）**：八种命名空间与 `nsproxy`、`pivot_root`、user ns 映射、net ns（veth/CNI 只点到）、容器里的 cgroup、overlayfs、FUSE、runc v1.5.2 创建路径、seccomp/能力/LSM 边界、观测与坑。PID 分配见 process-management，控制器见 cgroup，挂载传播见 vfs。 |
 
 ### 进程管理子章节
 
@@ -162,6 +163,24 @@
 | [15-errors-timeout-retry.md](./block-io/15-errors-timeout-retry.md) | `blk_status_t`、超时、failfast |
 | [16-observability.md](./block-io/16-observability.md) | `/sys/block/*/stat`、blktrace、io_uring fdinfo |
 | [17-perf-analysis.md](./block-io/17-perf-analysis.md) | 队列深度、延迟、调度器与 io_uring 的配方 |
+
+### 容器化子章节
+
+| 文件 | 内容 |
+|------|------|
+| [README.md](./containerization/README.md) | 章节目录、阅读顺序、与进程/cgroup/VFS 的边界 |
+| [01-overview.md](./containerization/01-overview.md) | 进程 → namespace → cgroup → 根文件系统 → 网络 |
+| [02-namespaces.md](./containerization/02-namespaces.md) | `nsproxy`、八个 `CLONE_NEW*`、`unshare`/`setns`、`/proc/<pid>/ns` |
+| [03-mount-ns-pivot-root.md](./containerization/03-mount-ns-pivot-root.md) | mount ns 复制与 `pivot_root` |
+| [04-pid-user-uts-ipc-time-ns.md](./containerization/04-pid-user-uts-ipc-time-ns.md) | pid/uts/ipc/time；user ns 的 uid/gid 映射 |
+| [05-net-ns.md](./containerization/05-net-ns.md) | `struct net`、设备进 ns；veth/bridge/CNI 只点到 |
+| [06-cgroup-in-containers.md](./containerization/06-cgroup-in-containers.md) | 创建时挂 cgroup、`CLONE_INTO_CGROUP`、委托 |
+| [07-overlayfs.md](./containerization/07-overlayfs.md) | lower/upper/work/merged、copy-up、whiteout、opaque |
+| [08-fuse.md](./containerization/08-fuse.md) | `fuse_req`、请求队列、守护进程 |
+| [09-runc-create-path.md](./containerization/09-runc-create-path.md) | runc v1.5.2：nsexec 三阶段、cgroup Apply、pivot_root、exec |
+| [10-seccomp-caps-lsm.md](./containerization/10-seccomp-caps-lsm.md) | seccomp、能力、LSM 边界 |
+| [11-observability.md](./containerization/11-observability.md) | `lsns`、nsfs、cgroup、overlay 参数、fusectl |
+| [12-perf-and-pitfalls.md](./containerization/12-perf-and-pitfalls.md) | copy-up 放大、user ns 映射、cgroup v1/v2、FUSE 延迟 |
 
 ## 约定
 
