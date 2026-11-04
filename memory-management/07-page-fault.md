@@ -292,6 +292,8 @@ identify_page_state
 | `kill_procs` / `kill_proc` | `mm/memory-failure.c:522` / `:340` | 发 SIGBUS 或 SIGKILL |
 | `soft_offline_page` | `mm/memory-failure.c:2790` | 软下线，不杀进程 |
 
+匿名缺页可以自己看：[demos/02_fault.c](./demos/02_fault.c) 逐页写入，`ru_minflt` 上升。整机的 `pgfault` / `pgmajfault` 在 [13.2](./13-observability.md#132-procvmstat)。从 `malloc` 走到这次缺页的单页在 [00](./00-life-of-malloc.md)。
+
 ---
 
 [上一节 mm/VMA](./06-mm-and-vma.md) · [目录](./README.md) · [下一节 页缓存](./08-page-cache-and-writeback.md)

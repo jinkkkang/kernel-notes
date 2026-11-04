@@ -3,7 +3,7 @@
 **结论**：内存管理是两条线。物理线回答「哪一页空闲、从哪个 zone 拿」；虚拟线回答「这个进程的这个地址现在映射到哪一页」。缺页是两条线的接头。KVM 再叠一层：guest 物理地址还要经 EPT/NPT 落到宿主物理页。
 
 > 版本：v6.6.160。源码对照 [elixir v6.6.160](https://elixir.bootlin.com/linux/v6.6.160/source)。
-> 导航：[目录](./README.md) · [下一节 物理布局](./02-physical-layout.md)
+> 导航：[上一篇 malloc 到 buddy](./00-life-of-malloc.md) · [目录](./README.md) · [下一节 物理布局](./02-physical-layout.md)
 
 ---
 
@@ -172,4 +172,21 @@ page frag 的缓存描述符是 `struct page_frag_cache`（`include/linux/mm_typ
 
 ---
 
-[目录](./README.md) · [下一节 物理布局](./02-physical-layout.md)
+## 1.6 现在就看
+
+下面两条普通用户就能读。数字随机器变。[13](./13-observability.md) 里那组数是在 6.12 上采样的，对不上本机是正常的。
+
+```bash
+cat /proc/buddyinfo
+grep -E '^(MemAvailable|Committed_AS):' /proc/meminfo
+```
+
+`/proc/buddyinfo` 每一列是一个阶上的空闲块个数。高阶列是 0、低阶还有块：空闲页在，连续大块没有。列的定义和那次采样在 [13.3](./13-observability.md#133-procbuddyinfo)。
+
+`MemAvailable` 是估计还能再分出去多少，里面含一部分可回收缓存。`Committed_AS` 是已经答应出去的虚拟量，可以大于 `MemAvailable`：`mmap` 记上了账，页可以还没在手上。两个字段从哪打印，在 [13.1](./13-observability.md#131-procmeminfo)。
+
+从 `malloc` 走到这条接头的单页在 [00](./00-life-of-malloc.md)。
+
+---
+
+[上一篇 malloc 到 buddy](./00-life-of-malloc.md) · [目录](./README.md) · [下一节 物理布局](./02-physical-layout.md)

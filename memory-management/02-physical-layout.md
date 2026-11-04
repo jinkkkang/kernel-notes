@@ -914,6 +914,8 @@ PCP 是每个 CPU、每个 zone 一份的小缓存，指针在 `zone->per_cpu_pa
 
 要按迁移类型拆开，看 `/proc/pagetypeinfo`（`pagetypeinfo_show`，`mm/vmstat.c:1627`）。它把每条 `free_list[mtype]` 走一遍，类型名字来自 `migratetype_names[]`（`mm/page_alloc.c:301`）：`Unmovable`、`Movable`、`Reclaimable`、`HighAtomic`，配置打开时还有 `CMA`、`Isolate`。这个文件的权限是 `0400`（`mm/vmstat.c:2141`）。在 6.12 上采样时读它是 `Permission denied`，数字不编，说明见 [13.4](./13-observability.md)。
 
+对照本机再读 [13.3](./13-observability.md)：`cat /proc/buddyinfo`。这个文件创建时是 `0444`，普通用户就能看。13.3 的三行是 6.12 采样，和这台机器对不上是正常的。高阶列为 0 时接着看 [03-07](./03-07-high-order-and-compaction.md)。
+
 ---
 
 ## 2.6 struct zonelist / struct zoneref

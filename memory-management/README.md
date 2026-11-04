@@ -10,6 +10,7 @@
 
 ## 目录
 
+0. [从 malloc 到 buddy](./00-life-of-malloc.md)
 1. [总览](./01-overview.md)
 2. [物理布局：page / folio / node / zone / buddy / sparsemem](./02-physical-layout.md)
 3. [页分配](./03-00-page-alloc.md)
@@ -25,10 +26,47 @@
 13. [观测](./13-observability.md)
 14. [按症状排障](./14-perf-and-dev-practice.md)
 
-## 建议阅读顺序
+## 初学者入口
+
+第一次读走这条。01–14 的目录和边界不动；这条只把「用户地址怎么变成物理页」先串起来。
 
 ```text
-01 总览
+00 从 malloc 到 buddy
+  → 01 总览（物理线 / 虚拟线）
+  → 02 物理布局（folio、zone、buddy 的名词）
+  → 06 mm/VMA（§6.5 对照 smaps，并跑 demos/01_maps_smaps.c）
+  → 07 缺页（demos/02_fault.c）
+```
+
+00 只叙述：glibc 可能 `brk` / `mmap` → 只改 VMA → 首次触摸缺页 → `do_anonymous_page` → buddy。调用链仍以 06、07、[03-01](./03-01-overview.md) 为准。
+
+| 易混概念 | 落点 |
+|---|---|
+| VSZ / RSS / PSS | [06 §6.5](./06-mm-and-vma.md#vsz-rss-pss) |
+| overcommit（进程虚拟承诺，0/1/2） | [06 §6.10](./06-mm-and-vma.md#为什么默认允许超卖)。guest 的 balloon / FPR 在 [12](./12-balloon-fpr-and-overcommit.md) |
+| `brk` 与匿名 `mmap` | [06 §6.4](./06-mm-and-vma.md#brk-与匿名-mmap) |
+| 有空闲页，高阶分配仍失败 | [02 §2.5](./02-physical-layout.md#25-buddy-概念) 的 `/proc/buddyinfo`；原因在 [03-07](./03-07-high-order-and-compaction.md)；采样行在 [13.3](./13-observability.md#133-procbuddyinfo) |
+
+### Key source files
+
+完整表在 [01 §1.4](./01-overview.md#14-本章源码地图) 和 [§1.5](./01-overview.md#15-关键函数表总入口)。先记住这几个文件：
+
+| 文件 | 角色 |
+|---|---|
+| `include/linux/mm_types.h` | `page`、`folio`、`mm_struct`、`vm_area_struct` |
+| `include/linux/mmzone.h` | node、`zone`、buddy 的 `free_area` |
+| `mm/page_alloc.c` | `__alloc_pages`，buddy |
+| `mm/mmap.c` | `mmap` / `brk`，改 VMA |
+| `mm/memory.c` | `handle_mm_fault`、`do_anonymous_page` |
+| `mm/slub.c` | 内核小对象 `kmalloc`。用户态 `malloc` 见 [00](./00-life-of-malloc.md) |
+
+## 建议阅读顺序
+
+全章仍按这个顺序。00 是上面的入口叙事，插在 01 前面。
+
+```text
+00 从 malloc 到 buddy（只串路径）
+  → 01 总览
   → 02 物理布局（page/zone/node 的名词，加上 buddy 的阶、拆、合；分配和释放的调用链在 03）
   → 03 页分配（03-00-page-alloc.md）→ 04 SLUB → 05 vmalloc
   → 06 mm/VMA → 07 缺页 → 08 页缓存

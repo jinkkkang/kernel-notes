@@ -451,7 +451,18 @@ brk                                     # SYSCALL_DEFINE1，mmap.c:178
   def_flags 带 VM_LOCKED 时，放锁后 mm_populate
 ```
 
-`start_brk` 是堆的起点，`brk` 是当前终点。`brk` 和匿名 `mmap` 在 `mm` 里都是 VMA，缺页路径一样。
+`start_brk` 是堆的起点，`brk` 是当前终点。`brk` 和匿名 `mmap` 在 `mm` 里都是 VMA。缺页是否相同，看这张表。
+
+### brk 与匿名 mmap
+
+| | `brk` | 匿名 `mmap` | 文件 `mmap` |
+|---|---|---|---|
+| 谁在扩大 | 堆，`[start_brk, brk)`。`maps` 里由 `vma_is_initial_heap` 印成 `[heap]` | 一段新的匿名区间。分配器拿它放堆以外的大块 | 文件区间。新建或合并文件 VMA，堆的终点不动 |
+| VMA | `do_brk_flags`（`mmap.c:3149`）。相邻且标志合得上就拉长原 VMA，否则新建匿名 VMA | `do_mmap`（`:1219`）找洞，`mmap_region` 插入 `mm_mt`。能合并就 `vma_merge` | 同一条 `do_mmap`。VMA 带 `vm_file` |
+| 系统调用返回时的物理页 | 还没有。`def_flags` 带 `VM_LOCKED` 时，放锁后 `mm_populate` | 还没有。`MAP_POPULATE`（且没有 `MAP_NONBLOCK`）或 `VM_LOCKED` 才在返回前填页 | 还没有。populate / locked 的条件和匿名 `mmap` 相同 |
+| 缺页 | 匿名 VMA，`do_anonymous_page`（[07](./07-page-fault.md)） | 与 `brk` 相同，`do_anonymous_page` | `do_fault`，进页缓存 |
+
+用户态 `malloc` 可能走 `brk`，也可能走匿名 `mmap`。选哪条是分配器的事。两条在缺页之前都只改 VMA。从 `malloc` 串下来的单页在 [00](./00-life-of-malloc.md)。
 
 合并看 `vma_merge`（`mmap.c:863`）。相邻、`mpol_equal`、再通过 `can_vma_merge_before` / `can_vma_merge_after`（`:772`、`:795`）：
 
@@ -498,9 +509,19 @@ start-end perm offset dev inode pathname
 
 `smaps_rollup` 走 `show_smaps_rollup`（`:882`），是整个 mm 的合计，比逐段 `smaps` 少扫几遍。
 
-`/proc/pid/status` 里和这些计数对应的名字在 `task_mmu.c:60` 起：`VmRSS`、`RssAnon`、`RssFile`、`RssShmem`、`VmData`、`VmStk`、`VmPTE`、`VmSwap`。
+`/proc/pid/status` 里和这些计数对应的名字在 `task_mmu.c:60` 起：`VmPeak`、`VmSize`、`VmRSS`、`RssAnon`、`RssFile`、`RssShmem`、`VmData`、`VmStk`、`VmPTE`、`VmSwap`。`task_mem` 把 `mm->total_vm` 打成 `VmSize`，把 `MM_ANONPAGES + MM_FILEPAGES + MM_SHMEMPAGES` 打成 `VmRSS`。`total_vm` 的成员注释在 [6.1](#61-struct-mm_struct-全部成员738)，写的是「映射的总页数」。
 
-用户态示例：[demos/01_maps_smaps.c](./demos/01_maps_smaps.c)。本机编译运行见 [14](./14-perf-and-dev-practice.md) 的验证记录。
+### VSZ RSS PSS
+
+| 名字 | `/proc` 里 | 数的是什么 | `mmap` / `brk` 刚返回 |
+|---|---|---|---|
+| VSZ | `status` 的 `VmSize`，`ps` 的 VSZ。整份 mm 的 `total_vm` | 已经映射的虚拟页 | 这段长度已经算进去。某一段 smaps 的 `Size` 只是这只 VMA 的 `vm_end - vm_start` |
+| RSS | `status` 的 `VmRSS`。某一段看 smaps 的 `Rss` | 页表里已经有的常驻页。换出的在 `VmSwap` 和 smaps 的 `Swap`。只读匿名且允许零页时映全局零页，`RssAnon` 几乎不涨（[07](./07-page-fault.md)） | 还是 0 |
+| PSS | smaps 的 `Pss`（`__show_smap`，`:813`）。整进程看 `smaps_rollup` | 常驻页按映射次数分摊。一页被 N 个进程映着，这里加 `1/N` 页。共享页在每个进程的 `Rss` 里各算一整页 | 还是 0 |
+
+有的工具再报 USS。`/proc` 不打印这个字段名。上面 smaps 表里的 `Private_Clean` 加 `Private_Dirty` 就是只记在这个进程头上的常驻页。
+
+用户态示例：[demos/01_maps_smaps.c](./demos/01_maps_smaps.c)。它匿名 `mmap` 2MB，只写第一个字节，再打 `maps` 里自己的那一行和 `smaps_rollup`。`maps` 上这段区间的长度是 2MB。`smaps_rollup` 是整个 mm 的合计，`Rss` 里含刚写的那一页，也含进程里原来的常驻页。本机编译运行见 [14](./14-perf-and-dev-practice.md) 的验证记录。
 
 ---
 
@@ -852,6 +873,17 @@ struct rmap_walk_control {
 ## 6.10 overcommit 记账
 
 **结论**：`mmap` 成功不等于有那么多物理页。`vm.overcommit_memory` 决定 `__vm_enough_memory` 在记账时有多较真。`/proc/meminfo` 的 `Committed_AS` 是已经答应出去的虚拟量。`CommitLimit` 三个模式都会印，判决只用在模式 2。
+
+### 为什么默认允许超卖
+
+默认是模式 0，`OVERCOMMIT_GUESS`。`__vm_enough_memory` 先把这次的页数记进 `vm_committed_as`，模式 0 再只拿这一次的页数去和 `totalram_pages() + total_swap_pages` 比。累计的 `Committed_AS` 不参与这次判决。
+
+两件日常的事因此过得去：
+
+- `fork` 复制地址空间（`dup_mmap`，`kernel/fork.c:648`）。带 `VM_ACCOUNT` 的 VMA 会再经 `security_vm_enough_memory_mm`（`security/security.c:1058`）问一次够不够，承诺按该 VMA 的整段虚拟长度记。可写私有页的物理副本要等第一次写、走 `do_wp_page`（[07](./07-page-fault.md)）才出现。模式 0 比的是这一只 VMA 的页数，父子两份承诺的和留在 `Committed_AS` 里，不拿来做这次判决。单段大于 RAM 加 swap，这一次失败。
+- JVM 一类运行时用匿名 `mmap` 预留堆，大部分页要等访问才缺页。预留小于 RAM 加 swap 时，模式 0 让 `mmap` 返回。预留本身大于 RAM 加 swap，模式 0 拒绝。`Documentation/mm/overcommit-accounting.rst` 把「几乎全是零页的稀疏数组」放在模式 1。模式 2 从第一次预留起就用累计承诺对 `CommitLimit`。
+
+进程地址空间的承诺写在下面三档。把同一堆物理页分给多个 guest 的 balloon、free page reporting、free page hinting 在 [12](./12-balloon-fpr-and-overcommit.md)。
 
 三个值和默认（`include/uapi/linux/mman.h:13-15`，`mm/util.c:830-835`）：
 
