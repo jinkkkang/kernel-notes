@@ -3,7 +3,7 @@
 > 内核版本：**v6.6.160**（commit `0aebf2870d53`）。下文路径、函数、结构体字段与行号按该版本核对。
 > 在线对照：[elixir.bootlin.com — linux/v6.6.160](https://elixir.bootlin.com/linux/v6.6.160/source)
 
-**一句话**：先把读内核绕不开的 C 习惯和「嵌入式链表」吃透，再谈谁能睡、谁不能睡，最后才是 RCU——写者等读者走完，而不是互相挡着。
+**一句话**：先把读内核绕不开的 C 习惯和「嵌入式链表」吃透，再谈谁能睡、谁不能睡；等一件事用等待队列或 completion，最后才是 RCU——写者等读者走完，而不是互相挡着。
 
 面向 **C 语言新手**：本章不是完整 C 教程，而是「内核里你会反复撞上的写法」；每遇到宏藏指针算术，都会有一小段「C 对照」。
 
@@ -17,8 +17,9 @@
 4. [原子操作与引用计数](./04-atomics-refcount.md)
 5. [自旋锁](./05-spinlock.md)
 6. [可睡眠锁与序列锁](./06-sleepable-locks.md)
-7. [RCU](./07-rcu.md)
-8. [观测、lockdep 与踩坑清单](./08-observability.md)
+7. [等待队列与 completion](./08-wait-queue-and-completion.md)（文件 `08-wait-queue-and-completion.md`，读序在 RCU 之前）
+8. [RCU](./07-rcu.md)（文件名仍是 `07-rcu.md`）
+9. [观测、lockdep 与踩坑清单](./08-observability.md)（现文件名 `08-observability.md`，读序最后；暂不改名）
 
 
 ## 可执行 Demo
@@ -33,6 +34,7 @@
 | `04_atomic_race.c` | 04 | 用户态，本机已验证 |
 | `kmod_list_example.c` | 02 | 内核模块**示例** |
 | `kmod_idr_example.c` | 03 | 内核模块**示例** |
+| `kmod_completion_timeout.c` | 08 wait / completion | 内核模块**示例**（RECIPE，未在 v6.6.160 上加载） |
 
 用户态一键（下面四条在作者机器上跑过，输出见各节，**sampled on 6.12**）：
 
@@ -51,12 +53,16 @@ gcc -Wall -O2 -pthread -o 04_atomic_race 04_atomic_race.c && ./04_atomic_race
                  ↓
             05 spinlock → 06 mutex/rwsem/seqlock
                  ↓
+            08 wait_queue / completion（文件 08-wait-queue-and-completion.md）
+                 ↓
             07 RCU（可回头看 02 的 RCU 链表变体）
                  ↓
-            03 树/映射（用到再深挖）→ 08 观测
+            03 树/映射（用到再深挖）
+                 ↓
+            观测（08-observability.md，现文件名 08，读序最后）
 ```
 
-先链表后锁：内核几乎所有容器都是「节点嵌在对象里」，不理解 `container_of` 后面全是雾。先原子后锁：锁的底层常常就是原子 + 屏障。RCU 放锁之后：你需要先知道「写者自己怎么互斥」。
+先链表后锁：内核几乎所有容器都是「节点嵌在对象里」，不理解 `container_of` 后面全是雾。先原子后锁：锁的底层常常就是原子 + 屏障。等待队列放在可睡眠锁之后、RCU 之前：mutex 的 `wait_list` 仍留在 06，通用的「等一件事」才用 `wait_queue_head` / `completion`。RCU 放锁之后：你需要先知道「写者自己怎么互斥」。两个文件都以 `08-` 开头，是因为观测那篇暂不改名。
 
 ## 与 process-management 的边界
 
@@ -64,6 +70,7 @@ gcc -Wall -O2 -pthread -o 04_atomic_race 04_atomic_race.c && ./04_atomic_race
 |---|---|
 | `list_head` / 常用容器直觉 | `task_struct` 成员语义、fork/exit 全路径 |
 | spinlock / mutex / rwsem / seqlock / RCU | 调度选人（EEVDF）、完整 MM |
+| `wait_queue_head` / `completion`（事件等待） | 用户态 futex；`schedule` 选出下一个任务 |
 | `refcount_t` 与对象生命周期套路 | 完整 cgroup / 完整 ptrace |
 | tasks RCU 与 exit 的**衔接点** | `do_exit` / `release_task` 细节（见进程章） |
 | lockdep、`/proc/lock_stat` 怎么读 | 完整 ftrace/perf 方法论（性能章） |
@@ -76,6 +83,8 @@ gcc -Wall -O2 -pthread -o 04_atomic_race 04_atomic_race.c && ./04_atomic_race
 - **`PREEMPT_RT` 下 spinlock→`rt_mutex_base` 的完整等待实现**——第 5、6 节给出类型怎么换，不展开 `kernel/locking/spinlock_rt.c`
 - **SRCU / RCU Tasks Trace / 整棵 `rcu_node` 树**——点到名字与用途
 - **完整 lockdep 图论与所有警告类别**
+- **用户态 futex**（`FUTEX_WAIT` / `FUTEX_WAKE`、哈希桶）——等待队列词汇在 `08-wait-queue-and-completion.md`，futex 另文
+- **`wait_on_bit` 全文、`wait_woken` 协议、把 swait 当通用队列**——completion 在 6.6 里嵌了 swait，只写到那一条路径
 
 **下一章建议**：调度（EEVDF，实现在 `kernel/sched/fair.c` 的 `pick_eevdf`）或中断/软中断——两者都会大量用到本章的锁与 list。
 

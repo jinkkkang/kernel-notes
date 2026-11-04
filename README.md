@@ -12,7 +12,7 @@
 | 笔记 | 说明 |
 |------|------|
 | [process-management/](./process-management/) | **进程管理（大章）**：总览与 `CLONE_*`、`task_struct`、PID/pidns、fork/clone、内核线程、exec、exit/回收、上下文切换入口、信号、观测清单。调度选人算法（EEVDF）见 scheduler。 |
-| [locks-and-ds/](./locks-and-ds/) | **同步原语与内核数据结构（大章）**：读内核够用的 C、`list_head`/hlist、树与映射容器、atomic/refcount、spinlock、mutex/rwsem/seqlock、RCU、lockdep 与踩坑。面向 C 新手补嵌入式链表与宏。 |
+| [locks-and-ds/](./locks-and-ds/) | **同步原语与内核数据结构（大章）**：读内核够用的 C、`list_head`/hlist、树与映射容器、atomic/refcount、spinlock、mutex/rwsem/seqlock、等待队列与 completion、RCU、lockdep 与踩坑。面向 C 新手补嵌入式链表与宏。 |
 | [cgroup/](./cgroup/) | **控制组（大章）**：cgroup v2 core 与对象模型、层次接口、fork/exit 挂钩与 cgroup ns、cpu/cpuset、memory、io/pids/freezer、PSI/rstat、本机观测。完整调度/MM/块层另章。 |
 | [scheduler/](./scheduler/) | **调度（大章）**：调度类链、`rq`/`cfs_rq`/`sched_entity`、EEVDF、入队与唤醒、负载均衡、cgroup cpu 衔接、RT/DL 边界、观测与性能分析配方。 |
 | [memory-management/](./memory-management/) | **内存管理（大章）**：物理页与 zone、buddy、SLUB、vmalloc、mm/VMA 与页表、缺页、页缓存、THP/hugetlb、回收与 OOM、KVM 二维页表与 mmu_notifier、balloon/FPR/热插拔、本机 `/proc` 观测与症状剧本。cgroup charge 与完整 VFS 另章。 |
@@ -50,8 +50,9 @@
 | [04-atomics-refcount.md](./locks-and-ds/04-atomics-refcount.md) | atomic 与 `refcount_t` |
 | [05-spinlock.md](./locks-and-ds/05-spinlock.md) | 自旋锁与 IRQ 变体 |
 | [06-sleepable-locks.md](./locks-and-ds/06-sleepable-locks.md) | mutex / rwsem / seqlock |
+| [08-wait-queue-and-completion.md](./locks-and-ds/08-wait-queue-and-completion.md) | 等待队列与 completion（读序在 RCU 之前） |
 | [07-rcu.md](./locks-and-ds/07-rcu.md) | RCU 与 tasks RCU 衔接 |
-| [08-observability.md](./locks-and-ds/08-observability.md) | lockdep、lock_stat、踩坑清单 |
+| [08-observability.md](./locks-and-ds/08-observability.md) | lockdep、lock_stat、踩坑清单（现文件名 08，读序最后） |
 
 ### cgroup 子章节
 
