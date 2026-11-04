@@ -121,6 +121,8 @@ flowchart TD
 | `mm/mmap.c`、`mm/rmap.c` | `mmap` / `munmap` / `brk`，反向映射 |
 | `mm/mmu_gather.c`、`include/asm-generic/tlb.h` | TLB 批量刷新 |
 | `mm/memory.c` | 缺页 |
+| `mm/gup.c` | `get_user_pages*` / `pin_user_pages*`。旗标在 `mm_types.h`，内部 `FOLL_PIN` 在 `mm/internal.h` |
+| `Documentation/core-api/pin_user_pages.rst` | get 与 pin 的释放纪律 |
 | `mm/filemap.c`、`mm/page-writeback.c`、`mm/shmem.c` | 页缓存、脏页、shmem |
 | `mm/vmscan.c`、`mm/oom_kill.c`、`mm/zswap.c` | 回收、OOM、zswap |
 | `mm/migrate.c`、`mm/mlock.c`、`mm/memory_hotplug.c` | 迁移、mlock、热插拔 |
