@@ -17,6 +17,7 @@
 | [scheduler/](./scheduler/) | **调度（大章）**：调度类链、`rq`/`cfs_rq`/`sched_entity`、EEVDF、入队与唤醒、负载均衡、NUMA balancing 闭环、cgroup cpu 衔接、RT/DL 边界、观测与性能分析配方。 |
 | [memory-management/](./memory-management/) | **内存管理（大章）**：物理页与 zone、buddy、SLUB、vmalloc、mm/VMA 与页表、缺页、页缓存、THP/hugetlb、回收与 OOM、KVM 二维页表与 mmu_notifier、balloon/FPR/热插拔、本机 `/proc` 观测与症状剧本。cgroup charge 与完整 VFS 另章。 |
 | [interrupts/](./interrupts/) | **中断（大章）**：x86-64 IDT 入口、APIC/MSI 向量、genirq 对象与层次域、向量矩阵、注册与流控、分配失败、softirq/tasklet、工作队列与 irq_work、定时器、KVM irqfd/posted interrupt、观测与性能配方。 |
+| [syscalls/](./syscalls/) | **系统调用（大章）**：x86-64 `entry_SYSCALL_64`、`x64_sys_call` 分派、`SYSCALL_WORK_*` 与退出循环、`copy_*_user`、vDSO/vvar、ia32 入口、`-ERESTART*`、seccomp/ptrace 挂钩面、观测与开销配方。IDT 与信号投递另章。 |
 | [vfs/](./vfs/) | **虚拟文件系统（大章）**：`dentry` / `inode` / `file`、路径查找、fd 与 open/close、读写与页缓存交接、splice/sendfile、mmap、挂载与传播、dcache/icache、文件锁与 inotify/fanotify、tmpfs 走读、proc/sysfs/debugfs、观测与性能配方。页缓存和回写的内存侧见 memory-management。 |
 | [block-io/](./block-io/) | **块层与 IO（大章）**：`bio` / `request`、blk-mq、`none` / mq-deadline / kyber / bfq、多队列亲和、ioprio 与 cgroup io、回写与 fsync、Direct IO、io_uring、NVMe 与 virtio-blk 走读、错误与超时、观测与性能配方。页缓存回写的内存侧见 memory-management，cgroup 文件见 cgroup。 |
 | [containerization/](./containerization/) | **容器化（大章）**：八种命名空间与 `nsproxy`、`pivot_root`、user ns 映射、net ns（veth/CNI 只点到）、容器里的 cgroup、overlayfs、FUSE、runc v1.5.2 创建路径、seccomp/能力/LSM 边界、观测与坑。PID 分配见 process-management，控制器见 cgroup，挂载传播见 vfs。 |
@@ -125,6 +126,23 @@
 | [11-kvm-irq-virt.md](./interrupts/11-kvm-irq-virt.md) | 客户机 LAPIC、irqfd、posted interrupt |
 | [12-observability.md](./interrupts/12-observability.md) | `/proc`、debugfs、tracepoint、irqbalance |
 | [13-perf-analysis.md](./interrupts/13-perf-analysis.md) | 风暴、softirq 饱和、亲和与配方 |
+
+### 系统调用子章节
+
+| 文件 | 内容 |
+|------|------|
+| [README.md](./syscalls/README.md) | 章节目录、阅读顺序、与中断/信号/容器/内存的边界 |
+| [01-overview.md](./syscalls/01-overview.md) | ABI、`pt_regs`、总图 |
+| [02-x86-entry.md](./syscalls/02-x86-entry.md) | `entry_SYSCALL_64`、`pcpu_hot.top_of_stack`、SYSRET |
+| [03-dispatch-and-define.md](./syscalls/03-dispatch-and-define.md) | `x64_sys_call`、`SYSCALL_DEFINE`、`getpid` |
+| [04-enter-exit-work.md](./syscalls/04-enter-exit-work.md) | `SYSCALL_WORK_*` 与 `exit_to_user_mode_loop` |
+| [05-usercopy.md](./syscalls/05-usercopy.md) | `copy_*_user`、SMAP、extable |
+| [06-vdso-and-vvar.md](./syscalls/06-vdso-and-vvar.md) | `[vdso]` / `[vvar]`、`vdso_data` |
+| [07-compat.md](./syscalls/07-compat.md) | `int $0x80`、`sysenter`、`TS_COMPAT` |
+| [08-restart.md](./syscalls/08-restart.md) | `-ERESTART*` 与 `restart_block` |
+| [09-hooks.md](./syscalls/09-hooks.md) | seccomp、ptrace、tracepoint、user dispatch |
+| [10-observability.md](./syscalls/10-observability.md) | maps、`/proc/<pid>/syscall`、tracepoint |
+| [11-perf-analysis.md](./syscalls/11-perf-analysis.md) | vDSO 与陷入的采样、strace/PTI 配方 |
 
 ### VFS 子章节
 

@@ -1,6 +1,6 @@
 # 2. x86-64 入口
 
-**结论**：设备中断不走异常的 `error_entry` 以外的特殊门，而是「短桩把向量号当成 error code 压栈 → `asm_common_interrupt` 建好 `pt_regs` → `common_interrupt` 在中断栈上查 `vector_irq[]`」。`irqentry_enter` 负责 RCU/lockdep，`irq_enter_rcu` 负责硬中断嵌套计数。
+**结论**：设备中断不走异常的 `error_entry` 以外的特殊门，而是「短桩把向量号当成 error code 压栈 → `asm_common_interrupt` 建好 `pt_regs` → `common_interrupt` 在中断栈上查 `vector_irq[]`」。`irqentry_enter` 负责 RCU/lockdep，`irq_enter_rcu` 负责硬中断嵌套计数。`syscall` 指令不进 IDT，入口是 `entry_SYSCALL_64`，见 [syscalls/02](../syscalls/02-x86-entry.md)。
 
 > 汇编桩写在头文件里，由 `arch/x86/entry/entry_64.S:603` 的 `#include <asm/idtentry.h>` 编进同一段 `.irqentry.text`。C 入口在 `arch/x86/kernel/irq.c:249`。
 
@@ -167,7 +167,7 @@ typedef struct irqentry_state {
 2. **打在 idle 任务上**（且不是 `CONFIG_TINY_RCU`）：无条件 `ct_irq_enter()`，`exit_rcu = true`。注释写明不能先看 `rcu_is_watching()`，否则嵌套进来的时钟中断会误判自己是第一层，提前结束 RCU 宽限期（`:334`）。
 3. **其余内核态**：`rcu_irq_enter_check_tick()`，给 NO_HZ 看要不要把 tick 拉回来。
 
-`irqentry_exit`（`:415`）在中断仍然关闭时：若回到用户态，走 `irqentry_exit_to_user_mode`；若 `state.exit_rcu`，配对 `ct_irq_exit()`；否则在可抢占内核上可能 `raw_irqentry_exit_cond_resched`（`:390`），里面看 `need_resched()` 再 `preempt_schedule_irq()`。
+`irqentry_exit`（`:415`）在中断仍然关闭时：若回到用户态，走 `irqentry_exit_to_user_mode`；若 `state.exit_rcu`，配对 `ct_irq_exit()`；否则在可抢占内核上可能 `raw_irqentry_exit_cond_resched`（`:390`），里面看 `need_resched()` 再 `preempt_schedule_irq()`。系统调用回到用户态走 `syscall_exit_to_user_mode`，在同一 TIF 循环之前多做 audit / ptrace / tracepoint，见 [syscalls/04](../syscalls/04-enter-exit-work.md)。
 
 ---
 

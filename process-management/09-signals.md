@@ -234,7 +234,7 @@ flowchart TD
 | `TASK_UNINTERRUPTIBLE` | 一般不响应。等的是磁盘一类必须做完的事 |
 | `TASK_STOPPED` / `TASK_TRACED` | 注释写明：`TASK_WAKEKILL` 也能把停住的任务叫醒来处理死亡信号 |
 
-被信号打断的系统调用返回 `-EINTR`，或者在 `SA_RESTART` 时用 `restart_block` 重做。这个位在 `k_sigaction` 里，不在 `task_struct` 上。
+被信号打断的系统调用返回 `-EINTR`，或者在 `SA_RESTART` 时重做。四种内核内部的 `-ERESTART*`、`ip -= 2` 和 `restart_block` 在 [syscalls/08](../syscalls/08-restart.md)。这个位在 `k_sigaction` 里，不在 `task_struct` 上。
 
 ## 9.5 关键函数
 
