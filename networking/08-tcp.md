@@ -205,7 +205,7 @@ struct tcp_sock {
 	unsigned int	keepalive_intvl;
 	int	linger2;
 #ifdef CONFIG_BPF
-	u8	bpf_sock_ops_cb_flags;     /* sockops 只点名，见 ebpf 章 */
+	u8	bpf_sock_ops_cb_flags;     /* sockops 见 ebpf/08 */
 	u8	bpf_chg_cc_inprogress:1;
 #endif
 	u16	timeout_rehash;

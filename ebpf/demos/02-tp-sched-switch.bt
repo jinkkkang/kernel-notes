@@ -1,0 +1,15 @@
+/* RECIPE：本环境没有 bpftrace，这个脚本没有跑。
+ * 字段来自 v6.6.160 include/trace/events/sched.h 的 TRACE_EVENT(sched_switch)：
+ *   prev_comm, prev_pid, prev_prio, prev_state, next_comm, next_pid, next_prio
+ * BPF 侧读的是 tracepoint 记录里的这些 args，不展开 TRACE_EVENT 宏。
+ */
+tracepoint:sched:sched_switch
+{
+	@[args->prev_state] = count();
+}
+
+interval:s:1
+{
+	print(@);
+	exit();
+}

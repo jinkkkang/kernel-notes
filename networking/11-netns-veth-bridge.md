@@ -55,7 +55,7 @@ veth_xmit                            veth.c:347
 
 `__dev_forward_skb` 会做 `skb_scrub_packet` 一类清理，让对端协议栈把这帧当成从那块网卡收到的以太网帧。对端若在另一个 netns，`skb->dev` 的 `nd_net` 就是那个 ns，随后的 `ip_rcv` 查的是对端的路由表。
 
-XDP 程序可以挂在 `veth_rq.xdp_prog` 上。程序本体留给 ebpf 章。
+XDP 程序可以挂在 `veth_rq.xdp_prog` 上。动作码和 generic/driver 模式在 [ebpf/07](../ebpf/07-xdp.md)。
 
 ---
 

@@ -16,7 +16,7 @@ __dev_queue_xmit(skb, sb_dev)          net/core/dev.c:4416
   rcu_read_lock_bh
   CONFIG_NET_EGRESS 时：
     nf_hook_egress                   见 12
-    sch_handle_egress                tc egress，程序见 ebpf 章
+    sch_handle_egress                tc egress，tcx / cls_bpf 见 ebpf/08
   IFF_XMIT_DST_RELEASE：skb_dst_drop，否则 skb_dst_force
   txq = netdev_core_pick_tx          内部 netdev_pick_tx（:4340）
   q = txq->qdisc
