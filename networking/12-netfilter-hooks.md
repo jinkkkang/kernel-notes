@@ -55,7 +55,7 @@ struct nf_hook_ops {
 
 `nf_register_net_hook`（`net/netfilter/core.c:557`）把 ops 插进这份 `struct net` 的对应链。`NF_HOOK` 宏在链为空时直接调用 `okfn`，否则 `nf_hook_slow`（`:619`）按优先级遍历。conntrack 用 `_nfct` 记在 skb 上，字段在 [02](./02-sk-buff.md) 的 `CONFIG_NF_CONNTRACK` 段。
 
-`hook_ops_type` 里的 `NF_HOOK_OP_BPF`（`netfilter.h:94`）表示这条 ops 来自 BPF。字节码和 verifier 留给 ebpf 章。
+`hook_ops_type` 里的 `NF_HOOK_OP_BPF`（`netfilter.h:94`）表示这条 ops 来自 BPF。`bpf_nf_link_attach` 怎样填 `hook`、`pf` 和 `priority`，见 [ebpf/08](../ebpf/08-tc-cgroup-sock.md)。
 
 iptables 的 filter 表挂在 `LOCAL_IN` / `FORWARD` / `LOCAL_OUT`，nat 表挂在 `PRE_ROUTING` / `POST_ROUTING` / `LOCAL_OUT`。nftables 用同一组 `hooknum`，可以在一份链里混用。选哪一个是用户态规则的事：内核只保证优先级和 `okfn` 的顺序。
 

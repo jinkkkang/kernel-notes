@@ -63,6 +63,8 @@ user dispatch 若决定拦下，入口返回 `-1`，`syscall_exit_work` 看到 `
 
 本环境非 root 列 `/sys/kernel/tracing/events/raw_syscalls/` 得到 `Permission denied`。打开方式写在 [10](./10-observability.md)，标成 RECIPE。
 
+用 `BPF_PROG_TYPE_RAW_TRACEPOINT` 订 `sys_enter` 时，`bpf_raw_tracepoint_open` 和 ctx 里的 `u64` 参数在 [ebpf/06-attach-and-link.md](../ebpf/06-attach-and-link.md)。上面的挂钩顺序不变。
+
 ---
 
 ## 9.5 audit

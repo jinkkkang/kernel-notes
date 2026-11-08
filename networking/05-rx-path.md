@@ -2,7 +2,7 @@
 
 **结论**：NAPI `poll` 从设备取出 skb 后交给 `napi_gro_receive`；合并不了的包进入 `__netif_receive_skb_core`，先过 generic XDP 和 ingress，再跑 `rx_handler`，最后按 `skb->protocol` 找到 `packet_type->func`。IPv4 的 func 是 `ip_rcv`。
 
-> 核心函数在 `net/core/dev.c`。GRO 在 `net/core/gro.c`。IPv4 入口在 `net/ipv4/ip_input.c`。XDP 程序本身留给以后的 ebpf 章，这里只留下调用点。
+> 核心函数在 `net/core/dev.c`。GRO 在 `net/core/gro.c`。IPv4 入口在 `net/ipv4/ip_input.c`。XDP 的 `xdp_buff`、动作码和 generic/driver 模式在 [ebpf/07](../ebpf/07-xdp.md)，这里只留下调用点。
 
 ---
 
@@ -37,7 +37,7 @@ __netif_receive_skb_core(pskb, pfmemalloc, ppt_prev)
 	skb->skb_iif = skb->dev->ifindex;
 	__this_cpu_inc(softnet_data.processed);
 
-	/* generic XDP：设备没有原生 XDP 时走这里。程序见 ebpf 章 */
+	/* generic XDP：设备没有原生 XDP 时走这里。程序见 ebpf/07 */
 	if (generic_xdp_needed)
 		do_xdp_generic(skb->dev->xdp_prog, skb);   /* :5531，函数 :5183 */
 		/* 返回不是 XDP_PASS：丢弃并返回 */
@@ -77,7 +77,7 @@ static struct packet_type ip_packet_type = {
 
 `rx_handler` 同一块设备只能有一个。`netdev_rx_handler_register`（`dev.c:5421`）在忙时返回错误。bridge 在 `br_add_if` 里注册 `br_handle_frame`（`net/bridge/br_if.c:630`，handler 在 `br_input.c:333`）。bond、macvlan、openvswitch 用同一张钩子。返回值枚举的注释在 `netdevice.h:433` 附近。
 
-generic XDP 的程序跑在 `bpf_prog_run_generic_xdp`（`dev.c:5011`）。动作是 `XDP_PASS` / `DROP` / `TX` / `REDIRECT` 这一组。原生 XDP 在驱动 poll 里更早发生，virtio-net 的接收队列上有 `rq->xdp_prog`（见 [13](./13-virtio-net-guest.md)）。程序怎么加载、map 怎么查，留给 ebpf 章。
+generic XDP 的程序跑在 `bpf_prog_run_generic_xdp`（`dev.c:5011`）。动作码、`do_xdp_generic` 和 `ndo_bpf` 的安装在 [ebpf/07](../ebpf/07-xdp.md)。原生 XDP 在驱动 poll 里更早发生，virtio-net 的接收队列上有 `rq->xdp_prog`（见 [13](./13-virtio-net-guest.md)）。
 
 ---
 

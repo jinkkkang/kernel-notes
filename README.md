@@ -20,7 +20,8 @@
 | [syscalls/](./syscalls/) | **系统调用（大章）**：x86-64 `entry_SYSCALL_64`、`x64_sys_call` 分派、`SYSCALL_WORK_*` 与退出循环、`copy_*_user`、vDSO/vvar、ia32 入口、`-ERESTART*`、seccomp/ptrace 挂钩面、观测与开销配方。IDT 与信号投递另章。 |
 | [vfs/](./vfs/) | **虚拟文件系统（大章）**：`dentry` / `inode` / `file`、路径查找、fd 与 open/close、读写与页缓存交接、splice/sendfile、mmap、挂载与传播、dcache/icache、文件锁与 inotify/fanotify、tmpfs 走读、proc/sysfs/debugfs、观测与性能配方。页缓存和回写的内存侧见 memory-management。 |
 | [ipc/](./ipc/) | **本地 IPC 与多路复用（大章）**：select/poll 的 `poll_table`、epoll 的对象与 `epoll_ctl` / `epoll_wait`、LT/ET/ONESHOT/EXCLUSIVE、pipe 的创建和读写唤醒、eventfd/signalfd/timerfd、`AF_UNIX` 就绪与 SysV/POSIX mqueue 薄写、观测与配方。futex 见 locks-and-ds，inotify 见 vfs，`sk_buff` 与完整收发见 networking。 |
-| [networking/](./networking/) | **网络栈（大章）**：`sk_buff`、`socket`/`sock`、`net_device` 与 NAPI、收发包与 qdisc、IPv4 路由与邻居、TCP/UDP、`AF_UNIX` 收发、netns 里的 veth/bridge、netfilter 挂钩、客户机 virtio-net、宿主机 tap/`vhost_net`、多队列与 RPS/XPS、观测与配方。epoll 见 ipc，softirq 见 interrupts，`struct net` 的创建见 containerization。 |
+| [networking/](./networking/) | **网络栈（大章）**：`sk_buff`、`socket`/`sock`、`net_device` 与 NAPI、收发包与 qdisc、IPv4 路由与邻居、TCP/UDP、`AF_UNIX` 收发、netns 里的 veth/bridge、netfilter 挂钩、客户机 virtio-net、宿主机 tap/`vhost_net`、多队列与 RPS/XPS、观测与配方。epoll 见 ipc，softirq 见 interrupts，`struct net` 的创建见 containerization。XDP 程序见 ebpf。 |
+| [ebpf/](./ebpf/) | **eBPF（大章）**：`bpf(2)` 装载、`bpf_insn` 与 JIT、verifier、map、BTF/CO-RE、`bpf_link`（kprobe / tracepoint / raw tp / fentry 的 BPF 侧）、XDP、tc/cgroup/sock/netfilter BPF、helper 与 tail call、bpffs、bpftool/libbpf、观测与配方。ftrace 环与 kprobe 断点留给未来的 tracing。seccomp cBPF 见 containerization 与 syscalls。 |
 | [block-io/](./block-io/) | **块层与 IO（大章）**：`bio` / `request`、blk-mq、`none` / mq-deadline / kyber / bfq、多队列亲和、ioprio 与 cgroup io、回写与 fsync、Direct IO、io_uring、NVMe 与 virtio-blk 走读、错误与超时、观测与性能配方。页缓存回写的内存侧见 memory-management，cgroup 文件见 cgroup。 |
 | [containerization/](./containerization/) | **容器化（大章）**：八种命名空间与 `nsproxy`、`pivot_root`、user ns 映射、net ns（veth/bridge 细节见 networking）、容器里的 cgroup、overlayfs、FUSE、runc v1.5.2 创建路径、seccomp/能力/LSM 边界、观测与坑。PID 分配见 process-management，控制器见 cgroup，挂载传播见 vfs。 |
 
@@ -186,7 +187,7 @@
 
 | 文件 | 内容 |
 |------|------|
-| [README.md](./networking/README.md) | 章节目录、阅读顺序、与 ipc / containerization / interrupts / 未来 ebpf 的边界 |
+| [README.md](./networking/README.md) | 章节目录、阅读顺序、与 ipc / containerization / interrupts / ebpf 的边界 |
 | [01-overview.md](./networking/01-overview.md) | socket 到网卡的总图，云上多一跳 virtqueue |
 | [02-sk-buff.md](./networking/02-sk-buff.md) | `sk_buff`、`skb_shared_info`、clone/copy、校验和与 GSO |
 | [03-socket-and-sock.md](./networking/03-socket-and-sock.md) | `socket` / `sock` / `sock_common`、`proto` 与 `proto_ops` |
@@ -204,6 +205,25 @@
 | [15-mq-rps-xps-affinity.md](./networking/15-mq-rps-xps-affinity.md) | 多队列、RPS/RFS、XPS、IRQ 亲和 |
 | [16-observability.md](./networking/16-observability.md) | `/proc/net`、`ss`、ethtool、RECIPE |
 | [17-perf-analysis.md](./networking/17-perf-analysis.md) | softirq、qdisc、重传、virtio 单队列 |
+
+### eBPF 子章节
+
+| 文件 | 内容 |
+|------|------|
+| [README.md](./ebpf/README.md) | 章节目录、阅读顺序、与 tracing / networking / syscalls / containerization 的边界 |
+| [01-overview.md](./ebpf/01-overview.md) | cBPF 与 eBPF、装载总图、覆盖边界 |
+| [02-prog-and-insn.md](./ebpf/02-prog-and-insn.md) | `bpf_insn`、`bpf_prog`、解释器与 JIT |
+| [03-verifier.md](./ebpf/03-verifier.md) | `bpf_check`、`do_check`、剪枝、helper 白名单 |
+| [04-maps.md](./ebpf/04-maps.md) | array / hash / percpu / lpm / map-in-map |
+| [05-btf-and-ctx.md](./ebpf/05-btf-and-ctx.md) | BTF、程序类型的 ctx、CO-RE |
+| [06-attach-and-link.md](./ebpf/06-attach-and-link.md) | `bpf_link`、kprobe / tracepoint / raw tp / fentry |
+| [07-xdp.md](./ebpf/07-xdp.md) | `xdp_buff`、generic/driver/offload、AF_XDP |
+| [08-tc-cgroup-sock.md](./ebpf/08-tc-cgroup-sock.md) | tcx、cls_bpf、cgroup-bpf、sockops、netfilter |
+| [09-helpers-and-sync.md](./ebpf/09-helpers-and-sync.md) | helper、RCU、tail call |
+| [10-bpf-syscall-and-fs.md](./ebpf/10-bpf-syscall-and-fs.md) | `bpf(2)` 命令、权限、bpffs |
+| [11-tooling.md](./ebpf/11-tooling.md) | libbpf、bpftool、bpftrace、perf |
+| [12-observability.md](./ebpf/12-observability.md) | sysctl、fdinfo、verifier log |
+| [13-perf-analysis.md](./ebpf/13-perf-analysis.md) | 拒载、map 争用、XDP 丢包、attach 开销 |
 
 ### 块层与 IO 子章节
 

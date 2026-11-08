@@ -62,7 +62,7 @@
 | `vhost_signal` 写 eventfd | irqfd 与客户机 LAPIC：[interrupts/11-kvm-irq-virt.md](../interrupts/11-kvm-irq-virt.md) |
 | 设备在 `struct net` 里，veth 两端可分属两个 ns | `nsproxy` 与 `copy_net_ns`：[containerization/05-net-ns.md](../containerization/05-net-ns.md)。本章写 veth 转发和 bridge |
 | `sk->sk_cgrp_data`、`net_cls` / `net_prio` | cgroup 对象：[cgroup/](../cgroup/README.md)。这里只点名 |
-| XDP、tc-BPF、sockops | 名字出现在收发包挂钩上。程序、verifier、map 留给以后的 ebpf 章 |
+| XDP、tc-BPF、sockops | 名字出现在收发包挂钩上。程序、verifier、map、动作码在 [ebpf/](../ebpf/README.md)：XDP 见 [ebpf/07](../ebpf/07-xdp.md)，tc 与 sockops 见 [ebpf/08](../ebpf/08-tc-cgroup-sock.md) |
 
 ## 源码地图
 
@@ -90,7 +90,7 @@
 - 物理网卡驱动（igb、ixgbe 一类）的描述符环
 - Wi-Fi、RDMA、WireGuard
 - 与 IPv4 对等厚度的 IPv6
-- XDP / AF_XDP 的程序与 verifier
+- XDP / AF_XDP 的程序与 verifier 已写在 [ebpf/07](../ebpf/07-xdp.md)。物理网卡描述符环仍不写
 - vhost-user 的用户态实现，以及 QEMU 源码
 - MPTCP、TCP-AO 的字段只在 `tcp_sock` 里按条件编译留着，不展开状态机
 

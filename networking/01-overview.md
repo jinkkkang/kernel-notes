@@ -80,6 +80,6 @@ vhost-user 把同一套 virtqueue 放到另一个用户态进程里。本章只�
 
 写：`sk_buff` 布局，套接字对象，NAPI 与 qdisc，IPv4 转发直觉，TCP/UDP 主路径，`AF_UNIX` 的 send/recv，netns 里的 veth 与 bridge，netfilter 五个 IPv4 挂钩，virtio-net 客户机与 `vhost_net`，多队列和观测。
 
-不写：物理网卡的 DMA 环，Wi-Fi / RDMA / WireGuard，完整 IPv6，XDP 程序本体，vhost-user 用户态，以及 softirq、epoll、`nsproxy` 已经在邻章写过的部分。
+不写：物理网卡的 DMA 环，Wi-Fi / RDMA / WireGuard，完整 IPv6，XDP 程序本体（见 [ebpf/07](../ebpf/07-xdp.md)），vhost-user 用户态，以及 softirq、epoll、`nsproxy` 已经在邻章写过的部分。
 
 *笔记生成对照源码：Linux v6.6.160。内核树不放进本仓库。*

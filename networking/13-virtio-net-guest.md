@@ -79,7 +79,7 @@ struct send_queue {
 struct receive_queue {
 	struct virtqueue *vq;
 	struct napi_struct napi;
-	struct bpf_prog __rcu *xdp_prog;          /* 原生 XDP，程序见 ebpf 章 */
+	struct bpf_prog __rcu *xdp_prog;          /* 原生 XDP，程序见 ebpf/07 */
 	struct virtnet_rq_stats stats;
 	struct virtnet_interrupt_coalesce intr_coal;
 	struct page *pages;
@@ -163,7 +163,7 @@ virtnet_poll                         :2222
 
 `napi_gro_receive` 之后的路径就是 [05](./05-rx-path.md)：GRO、`netif_receive_skb`、`ip_rcv`。合并接收时一个逻辑包占多个描述符，`num_buffers` 告诉驱动要收几块。填不满接收环时 `schedule_delayed_work(&vi->refill)`。
 
-`rq->xdp_prog` 非空时在组 skb 之前跑 XDP。动作和 generic XDP 同一组名字，加载路径留给 ebpf 章。
+`rq->xdp_prog` 非空时在组 skb 之前跑 XDP。动作码和装载路径在 [ebpf/07](../ebpf/07-xdp.md)。
 
 ---
 
