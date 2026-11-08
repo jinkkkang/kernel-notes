@@ -107,7 +107,7 @@ poll 的系统调用 `poll`（`:1065`）进 `do_sys_poll`（`:971`）。它把�
 
 `poll` 被信号打断时返回 `-ERESTARTNOHAND`，系统调用层把它记进 `restart_block` 并 `set_restart_fn(..., do_restart_poll)`（`do_restart_poll` 在 `:1044`，`poll` 系统调用里的登记在 `:1093`）。重启语义见 [syscalls/08](../syscalls/08-restart.md)。`ppoll`（`:1098`）在此之上接受 `timespec` 和信号掩码。
 
-两边都有一段 `net_busy_loop_on()` 时看 `POLL_BUSY_LOOP`（`include/uapi/asm-generic/poll.h:34`，值 `0x8000`）的忙等。那是套接字的 NAPI 忙等钩子，循环本身留给以后的 networking 章。本章只需要知道：select/poll 的主路径是「拷贝集合 → `vfs_poll` → 睡 → 再扫」。
+两边都有一段 `net_busy_loop_on()` 时看 `POLL_BUSY_LOOP`（`include/uapi/asm-generic/poll.h:34`，值 `0x8000`）的忙等。那是套接字的 NAPI 忙等钩子，NAPI 对象在 [networking/04](../networking/04-netdev-and-napi.md)。本章只需要知道：select/poll 的主路径是「拷贝集合 → `vfs_poll` → 睡 → 再扫」。
 
 ---
 

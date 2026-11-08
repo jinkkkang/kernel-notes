@@ -26,7 +26,7 @@ flowchart TD
 1. **user ns 不在 `nsproxy` 里**。它挂在 `cred->user_ns`（`include/linux/cred.h:138`）。新 user ns 里的 `CAP_SYS_ADMIN` 只在这个 ns 及其子 ns 里算数，`cap_capable` 沿 parent 链往上走（`security/commoncap.c:66`）。
 2. **pid ns 和 time ns 对调用者本人滞后**。`nsproxy->pid_ns_for_children` 和 `time_ns_for_children` 决定孩子看见的层。调用者自己的 pid 层看 `task_active_pid_ns()`。所以 `unshare(CLONE_NEWPID)` 之后必须再 `fork`，孩子才是新层的 1 号。细节在 [04](./04-pid-user-uts-ipc-time-ns.md)，号的分配在 [process-management/03](../process-management/03-pid-namespaces.md)。
 3. **cgroup 限额和 cgroup 命名空间是两回事**。限额在 `css_set`。`CLONE_NEWCGROUP` 只改 `/proc/self/cgroup` 的路径起点。控制器怎么记账见 [cgroup/](../cgroup/README.md)，本章 [06](./06-cgroup-in-containers.md) 只写容器创建时怎么挂上去。
-4. **网络虚拟化在本章停在「对象属于哪个 `struct net`」**。veth 的对端、bridge 的 FDB、CNI 插件怎么配地址，留给以后的 networking 章。[05](./05-net-ns.md) 只点到 `copy_net_ns` 和 `dev_change_net_namespace`。
+4. **网络虚拟化在本章停在「对象属于哪个 `struct net`」**。veth 的对端、bridge 的 FDB、CNI 插件怎么配地址，在 [networking/11](../networking/11-netns-veth-bridge.md)。[05](./05-net-ns.md) 只点到 `copy_net_ns` 和 `dev_change_net_namespace`。
 
 ---
 

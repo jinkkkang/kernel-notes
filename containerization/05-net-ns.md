@@ -1,6 +1,6 @@
 # 5. 网络命名空间
 
-**结论**：`CLONE_NEWNET` 做出一份新的 `struct net`。这份结构里嵌着这张网的设备表、IPv4/IPv6、以及打开了 netfilter 时的 `netns_nf`。环回设备 `lo` 由 pernet 初始化注册进来。把一块已经存在的网卡移进这个 ns，走 `__dev_change_net_namespace`。veth 是一对互相指向的 `net_device`；bridge 和 CNI 怎么用这对设备做转发，留给以后的 networking 章。
+**结论**：`CLONE_NEWNET` 做出一份新的 `struct net`。这份结构里嵌着这张网的设备表、IPv4/IPv6、以及打开了 netfilter 时的 `netns_nf`。环回设备 `lo` 由 pernet 初始化注册进来。把一块已经存在的网卡移进这个 ns，走 `__dev_change_net_namespace`。veth 是一对互相指向的 `net_device`；bridge 和 CNI 怎么用这对设备做转发，在 [networking/11](../networking/11-netns-veth-bridge.md)。
 
 > `struct net` 在 `include/net/net_namespace.h:61`。`copy_net_ns` 在 `net/core/net_namespace.c:495`。移动设备在 `net/core/dev.c:11321`。
 
@@ -156,9 +156,9 @@ ops 在 `net/core/net_namespace.c:1500` 的 `netns_operations`。`/proc/<pid>/ns
 
 `drivers/net/veth.c` 的 `veth_newlink`（`:1824`）先 `rtnl_create_link` 做出对端，再 `register_netdevice`，两边的私有数据用 `rcu_assign_pointer(priv->peer, ...)` 互指（`:1928` 与 `:1934`）。对端可以在创建时就放进另一个 net ns（rtnl 属性里带 ns fd）。一端发包，另一端在自己的 `net_device` 上收。队列、XDP、GSO 的细节不在本章。
 
-bridge 是另一块 `net_device`，加上转发库。它把多个端口收进同一个二层域。端口可以是 veth 在宿主机那一端。转发数据库、vlan、stp 留给 networking 章。
+bridge 是另一块 `net_device`，加上转发库。它把多个端口收进同一个二层域。端口可以是 veth 在宿主机那一端。转发数据库、vlan、stp 在 [networking/11](../networking/11-netns-veth-bridge.md)。
 
-CNI 是用户态约定：运行时建一个 net ns，插件建 veth、把一端移进去、在里面配地址和路由，有的插件再把另一端插进 bridge。插件进程怎么调用 rtnl，留给以后的 networking 章。runc 在 `initProcess.start` 里调用 `createNetworkInterfaces`（见 [09](./09-runc-create-path.md)），把已经准备好的接口送进容器的 net ns。
+CNI 是用户态约定：运行时建一个 net ns，插件建 veth、把一端移进去、在里面配地址和路由，有的插件再把另一端插进 bridge。插件进程在内核里留下的就是 veth 和 bridge，见 [networking/11](../networking/11-netns-veth-bridge.md)。runc 在 `initProcess.start` 里调用 `createNetworkInterfaces`（见 [09](./09-runc-create-path.md)），把已经准备好的接口送进容器的 net ns。
 
 容器里看到的路由是 `net->ipv4` 里那份 fib。宿主机的默认路由不会跟着 `copy_net_ns` 拷贝过去；地址和路由是用户态在新 ns 里重新配的。
 

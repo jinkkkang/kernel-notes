@@ -19,9 +19,10 @@
 | [interrupts/](./interrupts/) | **中断（大章）**：x86-64 IDT 入口、APIC/MSI 向量、genirq 对象与层次域、向量矩阵、注册与流控、分配失败、softirq/tasklet、工作队列与 irq_work、定时器、KVM irqfd/posted interrupt、观测与性能配方。 |
 | [syscalls/](./syscalls/) | **系统调用（大章）**：x86-64 `entry_SYSCALL_64`、`x64_sys_call` 分派、`SYSCALL_WORK_*` 与退出循环、`copy_*_user`、vDSO/vvar、ia32 入口、`-ERESTART*`、seccomp/ptrace 挂钩面、观测与开销配方。IDT 与信号投递另章。 |
 | [vfs/](./vfs/) | **虚拟文件系统（大章）**：`dentry` / `inode` / `file`、路径查找、fd 与 open/close、读写与页缓存交接、splice/sendfile、mmap、挂载与传播、dcache/icache、文件锁与 inotify/fanotify、tmpfs 走读、proc/sysfs/debugfs、观测与性能配方。页缓存和回写的内存侧见 memory-management。 |
-| [ipc/](./ipc/) | **本地 IPC 与多路复用（大章）**：select/poll 的 `poll_table`、epoll 的对象与 `epoll_ctl` / `epoll_wait`、LT/ET/ONESHOT/EXCLUSIVE、pipe 的创建和读写唤醒、eventfd/signalfd/timerfd、`AF_UNIX` 就绪与 SysV/POSIX mqueue 薄写、观测与配方。futex 见 locks-and-ds，inotify 见 vfs，`sk_buff` 留给以后的 networking。 |
+| [ipc/](./ipc/) | **本地 IPC 与多路复用（大章）**：select/poll 的 `poll_table`、epoll 的对象与 `epoll_ctl` / `epoll_wait`、LT/ET/ONESHOT/EXCLUSIVE、pipe 的创建和读写唤醒、eventfd/signalfd/timerfd、`AF_UNIX` 就绪与 SysV/POSIX mqueue 薄写、观测与配方。futex 见 locks-and-ds，inotify 见 vfs，`sk_buff` 与完整收发见 networking。 |
+| [networking/](./networking/) | **网络栈（大章）**：`sk_buff`、`socket`/`sock`、`net_device` 与 NAPI、收发包与 qdisc、IPv4 路由与邻居、TCP/UDP、`AF_UNIX` 收发、netns 里的 veth/bridge、netfilter 挂钩、客户机 virtio-net、宿主机 tap/`vhost_net`、多队列与 RPS/XPS、观测与配方。epoll 见 ipc，softirq 见 interrupts，`struct net` 的创建见 containerization。 |
 | [block-io/](./block-io/) | **块层与 IO（大章）**：`bio` / `request`、blk-mq、`none` / mq-deadline / kyber / bfq、多队列亲和、ioprio 与 cgroup io、回写与 fsync、Direct IO、io_uring、NVMe 与 virtio-blk 走读、错误与超时、观测与性能配方。页缓存回写的内存侧见 memory-management，cgroup 文件见 cgroup。 |
-| [containerization/](./containerization/) | **容器化（大章）**：八种命名空间与 `nsproxy`、`pivot_root`、user ns 映射、net ns（veth/CNI 只点到）、容器里的 cgroup、overlayfs、FUSE、runc v1.5.2 创建路径、seccomp/能力/LSM 边界、观测与坑。PID 分配见 process-management，控制器见 cgroup，挂载传播见 vfs。 |
+| [containerization/](./containerization/) | **容器化（大章）**：八种命名空间与 `nsproxy`、`pivot_root`、user ns 映射、net ns（veth/bridge 细节见 networking）、容器里的 cgroup、overlayfs、FUSE、runc v1.5.2 创建路径、seccomp/能力/LSM 边界、观测与坑。PID 分配见 process-management，控制器见 cgroup，挂载传播见 vfs。 |
 
 ### 进程管理子章节
 
@@ -180,6 +181,29 @@
 | [08-unix-and-sysv.md](./ipc/08-unix-and-sysv.md) | `AF_UNIX` 就绪，SysV 与 POSIX mqueue |
 | [09-observability.md](./ipc/09-observability.md) | fdinfo、epoll 与 pipe 的 sysctl |
 | [10-perf-analysis.md](./ipc/10-perf-analysis.md) | 少量 fd、漏读、惊群、小写多醒 |
+
+### 网络栈子章节
+
+| 文件 | 内容 |
+|------|------|
+| [README.md](./networking/README.md) | 章节目录、阅读顺序、与 ipc / containerization / interrupts / 未来 ebpf 的边界 |
+| [01-overview.md](./networking/01-overview.md) | socket 到网卡的总图，云上多一跳 virtqueue |
+| [02-sk-buff.md](./networking/02-sk-buff.md) | `sk_buff`、`skb_shared_info`、clone/copy、校验和与 GSO |
+| [03-socket-and-sock.md](./networking/03-socket-and-sock.md) | `socket` / `sock` / `sock_common`、`proto` 与 `proto_ops` |
+| [04-netdev-and-napi.md](./networking/04-netdev-and-napi.md) | `net_device`、NAPI、`softnet_data`、RPS 挂钩 |
+| [05-rx-path.md](./networking/05-rx-path.md) | GRO、`netif_receive_skb`、`ip_rcv` |
+| [06-tx-path-and-qdisc.md](./networking/06-tx-path-and-qdisc.md) | `dev_queue_xmit`、`Qdisc`、BQL、XPS 挂钩 |
+| [07-ipv4-route-neigh.md](./networking/07-ipv4-route-neigh.md) | fib、`dst_entry`、邻居与 ARP |
+| [08-tcp.md](./networking/08-tcp.md) | `tcp_sock`、收发主路径、cubic |
+| [09-udp.md](./networking/09-udp.md) | `udp_sendmsg` / `udp_recvmsg`、哈希表 |
+| [10-af-unix.md](./networking/10-af-unix.md) | UNIX 流与数据报的 send/recv、`SCM_RIGHTS` |
+| [11-netns-veth-bridge.md](./networking/11-netns-veth-bridge.md) | veth 转发、bridge `rx_handler` |
+| [12-netfilter-hooks.md](./networking/12-netfilter-hooks.md) | `NF_INET_*` 与 `nf_hook_ops` |
+| [13-virtio-net-guest.md](./networking/13-virtio-net-guest.md) | 客户机 virtio-net 队列与 NAPI |
+| [14-virtio-net-host-vhost.md](./networking/14-virtio-net-host-vhost.md) | tap 与 `vhost_net`；vhost-user 只点名 |
+| [15-mq-rps-xps-affinity.md](./networking/15-mq-rps-xps-affinity.md) | 多队列、RPS/RFS、XPS、IRQ 亲和 |
+| [16-observability.md](./networking/16-observability.md) | `/proc/net`、`ss`、ethtool、RECIPE |
+| [17-perf-analysis.md](./networking/17-perf-analysis.md) | softirq、qdisc、重传、virtio 单队列 |
 
 ### 块层与 IO 子章节
 

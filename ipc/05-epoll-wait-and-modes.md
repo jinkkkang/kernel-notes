@@ -74,7 +74,7 @@ for (;;) {
 
 `__add_wait_queue_exclusive`（`include/linux/wait.h:188`）置 `WQ_FLAG_EXCLUSIVE`，再按 `__add_wait_queue` 插到优先级项之后、普通项的最前。`epoll_wait` 这边的独占，和目标 fd 上的 `EPOLLEXCLUSIVE` 是两层：前者限制「同一个 epfd 醒几个线程」，后者限制「同一个目标 fd 叫几个 epoll」。
 
-`ep_busy_loop`（`:408`，要 `CONFIG_NET_RX_BUSY_POLL`）读 `ep->napi_id`。id 达到 `MIN_NAPI_ID` 且 `net_busy_loop_on()` 时调用 `napi_busy_loop`。超时后把 `napi_id` 清 0，等下次回调经 `ep_set_busy_poll_napi_id`（`:431`）从 `sk->sk_napi_id` 再记上。没开这个配置时函数直接返回 false（`:465`）。`napi_busy_loop` 的预算和软中断出口留给以后的 networking 章。
+`ep_busy_loop`（`:408`，要 `CONFIG_NET_RX_BUSY_POLL`）读 `ep->napi_id`。id 达到 `MIN_NAPI_ID` 且 `net_busy_loop_on()` 时调用 `napi_busy_loop`。超时后把 `napi_id` 清 0，等下次回调经 `ep_set_busy_poll_napi_id`（`:431`）从 `sk->sk_napi_id` 再记上。没开这个配置时函数直接返回 false（`:465`）。`napi_id` 记在 `napi_struct` 上，见 [networking/04](../networking/04-netdev-and-napi.md)。
 
 `ep_send_events` 开头若 `fatal_signal_pending(current)` 返回 `-EINTR`（`:1662`），避免致命信号路径上反复找到新事件、退不出去。
 
