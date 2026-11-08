@@ -53,6 +53,7 @@
 | `restart_block.futex` 里记下的等待参数 | futex 的 WAIT/WAKE：[locks-and-ds/09-futex.md](../locks-and-ds/09-futex.md) |
 | time namespace 让 vvar 缺页走到 `find_timens_vvar_page` | 偏移怎么写：[containerization/04-pid-user-uts-ipc-time-ns.md](../containerization/04-pid-user-uts-ipc-time-ns.md) |
 | 用户态怎样进到 `sys_read` 的桩 | `vfs_read` 往下：[vfs/05-read-write.md](../vfs/05-read-write.md) |
+| `epoll_*`、`pipe2`、`eventfd2` 从 `x64_sys_call` 落到 `fs/eventpoll.c` 等 | 对象与唤醒：[ipc/](../ipc/README.md) |
 
 本章是用户态进内核的封口。具体业务系统调用（VFS、网络、futex 哈希桶）从对应章节接着读。ptrace 只写到 `PTRACE_SYSCALL` 置上 `SYSCALL_WORK_SYSCALL_TRACE`。arm64 的 `svc` 入口不在这里展开。
 

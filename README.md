@@ -19,6 +19,7 @@
 | [interrupts/](./interrupts/) | **中断（大章）**：x86-64 IDT 入口、APIC/MSI 向量、genirq 对象与层次域、向量矩阵、注册与流控、分配失败、softirq/tasklet、工作队列与 irq_work、定时器、KVM irqfd/posted interrupt、观测与性能配方。 |
 | [syscalls/](./syscalls/) | **系统调用（大章）**：x86-64 `entry_SYSCALL_64`、`x64_sys_call` 分派、`SYSCALL_WORK_*` 与退出循环、`copy_*_user`、vDSO/vvar、ia32 入口、`-ERESTART*`、seccomp/ptrace 挂钩面、观测与开销配方。IDT 与信号投递另章。 |
 | [vfs/](./vfs/) | **虚拟文件系统（大章）**：`dentry` / `inode` / `file`、路径查找、fd 与 open/close、读写与页缓存交接、splice/sendfile、mmap、挂载与传播、dcache/icache、文件锁与 inotify/fanotify、tmpfs 走读、proc/sysfs/debugfs、观测与性能配方。页缓存和回写的内存侧见 memory-management。 |
+| [ipc/](./ipc/) | **本地 IPC 与多路复用（大章）**：select/poll 的 `poll_table`、epoll 的对象与 `epoll_ctl` / `epoll_wait`、LT/ET/ONESHOT/EXCLUSIVE、pipe 的创建和读写唤醒、eventfd/signalfd/timerfd、`AF_UNIX` 就绪与 SysV/POSIX mqueue 薄写、观测与配方。futex 见 locks-and-ds，inotify 见 vfs，`sk_buff` 留给以后的 networking。 |
 | [block-io/](./block-io/) | **块层与 IO（大章）**：`bio` / `request`、blk-mq、`none` / mq-deadline / kyber / bfq、多队列亲和、ioprio 与 cgroup io、回写与 fsync、Direct IO、io_uring、NVMe 与 virtio-blk 走读、错误与超时、观测与性能配方。页缓存回写的内存侧见 memory-management，cgroup 文件见 cgroup。 |
 | [containerization/](./containerization/) | **容器化（大章）**：八种命名空间与 `nsproxy`、`pivot_root`、user ns 映射、net ns（veth/CNI 只点到）、容器里的 cgroup、overlayfs、FUSE、runc v1.5.2 创建路径、seccomp/能力/LSM 边界、观测与坑。PID 分配见 process-management，控制器见 cgroup，挂载传播见 vfs。 |
 
@@ -163,6 +164,22 @@
 | [11-pseudo-fs.md](./vfs/11-pseudo-fs.md) | procfs、sysfs/kernfs、debugfs |
 | [12-observability.md](./vfs/12-observability.md) | `/proc/sys/fs/*`、slab 名、tracepoint |
 | [13-perf-analysis.md](./vfs/13-perf-analysis.md) | 路径查找、dcache、fsync、DIO 的配方 |
+
+### 本地 IPC 与多路复用子章节
+
+| 文件 | 内容 |
+|------|------|
+| [README.md](./ipc/README.md) | 章节目录、阅读顺序、与锁 / VFS / 进程 / 块层的边界 |
+| [01-overview.md](./ipc/01-overview.md) | 总览与选型 |
+| [02-poll-select.md](./ipc/02-poll-select.md) | select / poll 与 `poll_table` |
+| [03-epoll-objects.md](./ipc/03-epoll-objects.md) | `eventpoll` / `epitem` / `eppoll_entry` |
+| [04-epoll-ctl-and-callback.md](./ipc/04-epoll-ctl-and-callback.md) | `epoll_ctl` 与 `ep_poll_callback` |
+| [05-epoll-wait-and-modes.md](./ipc/05-epoll-wait-and-modes.md) | `epoll_wait` 与 LT / ET / ONESHOT / EXCLUSIVE |
+| [06-pipe.md](./ipc/06-pipe.md) | pipe 创建与读写唤醒 |
+| [07-eventfd-signalfd-timerfd.md](./ipc/07-eventfd-signalfd-timerfd.md) | eventfd / signalfd / timerfd |
+| [08-unix-and-sysv.md](./ipc/08-unix-and-sysv.md) | `AF_UNIX` 就绪，SysV 与 POSIX mqueue |
+| [09-observability.md](./ipc/09-observability.md) | fdinfo、epoll 与 pipe 的 sysctl |
+| [10-perf-analysis.md](./ipc/10-perf-analysis.md) | 少量 fd、漏读、惊群、小写多醒 |
 
 ### 块层与 IO 子章节
 
