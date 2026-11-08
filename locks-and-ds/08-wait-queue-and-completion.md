@@ -224,7 +224,7 @@ wake_up_sync(x)            __wake_up_sync(x, TASK_NORMAL)         :228
 
 `key` 原样传给 `func`。`poll_to_key`（`wait.h:238`）/ `key_to_poll`（`:239`）把 poll 事件掩码塞进这个指针。`wake_up_poll`（`:240`）因此可以只叫醒关心这几位的等待者——前提是 `func` 自己看 `key`。默认回调不看。
 
-`private` 在默认路径上就是 `task_struct *`。自定义 `func` 时它可以是别的对象；那种 entry 不要交给 `default_wake_function`，它会把 `private` 当成任务指针送进 `try_to_wake_up`。
+`private` 在默认路径上就是 `task_struct *`。自定义 `func` 时它可以是别的对象；那种 entry 不要交给 `default_wake_function`，它会把 `private` 当成任务指针送进 `try_to_wake_up`。epoll 把 `eppoll_entry.wait.func` 设成 `ep_poll_callback`（`fs/eventpoll.c:1133`），`private` 留空，对象从 `container_of` 找回来，见 [ipc/04](../ipc/04-epoll-ctl-and-callback.md)。
 
 ---
 

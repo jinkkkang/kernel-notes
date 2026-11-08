@@ -52,7 +52,7 @@
 | 本章写到哪 | 留给别章 |
 |---|---|
 | `inode->i_mapping` 指向的 `address_space`，以及 `read_iter` 何时把活交给页缓存 | 页缓存 folio、脏页限速、回写线程：[memory-management/08-page-cache-and-writeback.md](../memory-management/08-page-cache-and-writeback.md) |
-| `splice` / `sendfile` / `copy_file_range` 怎样把页放进管道槽，以及何时调用 `remap_file_range` | 套接字上的 `splice_to_socket`、TCP；`pipe(2)` 的创建细节和完整 IPC；ext4/xfs 怎样克隆区间 |
+| `splice` / `sendfile` / `copy_file_range` 怎样把页放进管道槽，以及何时调用 `remap_file_range` | 套接字上的 `splice_to_socket`、TCP；`pipe(2)` 的创建、读写唤醒和 epoll 见 [ipc/](../ipc/README.md)；ext4/xfs 怎样克隆区间 |
 | `filemap_fault` 从 VFS 缺页入口走到 `read_folio` | 缺页分发、`do_fault`、userfaultfd：[memory-management/07-page-fault.md](../memory-management/07-page-fault.md) |
 | 每个超级块的 `s_shrink` 怎么被 `shrink_slab` 调到 | 水位、kswapd、`shrink_slab` 本身：[memory-management/10-01-overview.md](../memory-management/10-01-overview.md) |
 | shmem/tmpfs 的 VFS 函数表和 open/read/write/fsync | shmem 换出、`shmem_inode_info`、缺页分配：[memory-management/08-page-cache-and-writeback.md](../memory-management/08-page-cache-and-writeback.md) §8.4 |
@@ -75,7 +75,7 @@
 | `fs/namei.c` | 路径查找与 `do_filp_open` |
 | `fs/open.c`、`fs/file.c`、`fs/file_table.c` | open、fd 表、`fput` |
 | `fs/read_write.c`、`mm/filemap.c` | `vfs_read` / `vfs_write`、`sendfile`、`copy_file_range`、页缓存读写、`filemap_splice_read`、`filemap_fault` |
-| `include/linux/pipe_fs_i.h`、`fs/splice.c`、`fs/pipe.c` | `pipe_buffer`、`do_splice`、`do_splice_direct`。`pipe` / `pipe2` 只点到系统调用入口 |
+| `include/linux/pipe_fs_i.h`、`fs/splice.c`、`fs/pipe.c` | `pipe_buffer`、`do_splice`、`do_splice_direct`。`pipe2` 的创建和 `pipe_read` / `pipe_write` 唤醒见 [ipc/06](../ipc/06-pipe.md) |
 | `fs/namespace.c`、`fs/fsopen.c`、`fs/pnode.c` | mount、fsopen/fsmount、传播 |
 | `fs/dcache.c`、`fs/inode.c`、`fs/super.c` | dcache、icache、每超级块 shrinker |
 | `fs/locks.c`、`fs/notify/` | 文件锁、inotify、fanotify |
@@ -91,7 +91,7 @@
 
 - ext4 / xfs / btrfs 的目录项、日志、分配组。`remap_file_range` 在 VFS 里何时被调用见 [05b](./05b-splice-and-zerocopy.md)，各文件系统怎样克隆区间不写
 - 套接字上的 splice / `sendpage`（`splice_to_socket` 只点名）
-- `pipe(2)` 的创建细节和作为 IPC 的用法（系统调用行号在 [05b](./05b-splice-and-zerocopy.md)）
+- `pipe(2)` 的创建、`pipe_read` / `pipe_write` 唤醒、epoll：见 [ipc/](../ipc/README.md)。管道槽字段仍在 [05b](./05b-splice-and-zerocopy.md)
 - FUSE 请求队列、overlayfs 的 whiteout 与 copy-up（见 [containerization/](../containerization/README.md)）
 - `io_uring` 的提交环与固定文件表
 - NFS/9p 的网络查找
