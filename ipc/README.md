@@ -48,7 +48,7 @@
 | inotify / fanotify / dnotify | [vfs/09-locks-and-notify.md](../vfs/09-locks-and-notify.md) |
 | 信号挂在 `pending` / `shared_pending`，`dequeue_signal` 怎么取 | [process-management/09-signals.md](../process-management/09-signals.md)。signalfd 只写 fd 侧 |
 | `EPOLL_URING_WAKE` 这一位怎么被 io_uring 的 poll 武装认出来 | [block-io/12-io-uring.md](../block-io/12-io-uring.md)。本章只点名 |
-| `AF_UNIX` 的 `unix_poll` 报可读可写 | `sk_buff`、发送队列、`unix_stream_sendmsg` 的字节账留给以后的 networking 章。NAPI busy poll 只点到 `eventpoll.napi_id` |
+| `AF_UNIX` 的 `unix_poll` 报可读可写 | `sk_buff`、发送队列、`unix_stream_sendmsg` 的字节账在 [networking/10](../networking/10-af-unix.md)。NAPI busy poll 只点到 `eventpoll.napi_id`，预算在 [networking/04](../networking/04-netdev-and-napi.md) |
 | SysV 对象放在 `ipc_namespace` | 命名空间本身：[containerization/04-pid-user-uts-ipc-time-ns.md](../containerization/04-pid-user-uts-ipc-time-ns.md) |
 | `epoll_pwait` 在等待期间换信号掩码 | `-ERESTART*` 与 `restart_block`：[syscalls/08-restart.md](../syscalls/08-restart.md) |
 
@@ -71,7 +71,7 @@
 
 ## 未覆盖
 
-- `sk_buff`、TCP 就绪、NAPI busy poll 的预算和 `napi_busy_loop` 循环
+- `sk_buff`、TCP 就绪、NAPI busy poll 的预算和 `napi_busy_loop` 循环。见 [networking/](../networking/README.md)
 - `IORING_OP_POLL_ADD` 的请求对象
 - `watch_queue` / `KEYCTL_WATCH_*`。pipe 上的 `O_NOTIFICATION_PIPE` 只点名
 - SysV 每条命令的兼容层、endian、完整权限判例

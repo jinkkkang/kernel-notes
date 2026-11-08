@@ -41,7 +41,7 @@
 | `__schedule` / EEVDF 选谁跑 | [scheduler/](../scheduler/)；本章只写到 `TIF_NEED_RESCHED` 和 `SCHED_SOFTIRQ` |
 | 缺页、`vmalloc` 栈 | [memory-management/](../memory-management/)；中断栈大小只给宏 |
 | 信号从哪投递到用户态 | [process-management/09-signals.md](../process-management/09-signals.md) |
-| NAPI 协议栈内部 | 只点到 `NET_RX_SOFTIRQ` 怎么被拉起 |
+| NAPI 协议栈内部 | 只点到 `NET_RX_SOFTIRQ` 怎么被拉起。`net_rx_action`、qdisc 与 virtio 通知见 [networking/04](../networking/04-netdev-and-napi.md)、[networking/06](../networking/06-tx-path-and-qdisc.md)、[networking/14](../networking/14-virtio-net-host-vhost.md) |
 | 完整 IOMMU DMA 重映射 | 只写中断重映射表（IRTE） |
 
 ## 源码地图（先认门牌）

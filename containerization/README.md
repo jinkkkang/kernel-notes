@@ -50,7 +50,7 @@
 | 容器创建时把任务挂进 cgroup、委托边界 | cgroup 对象、控制器、`cgroup.subtree_control`：[cgroup/](../cgroup/README.md) |
 | `pivot_root` 与 mount ns 复制时的传播 | `struct mount`、shared/slave/private/unbindable、新挂载 API：[vfs/07](../vfs/07-mount-and-ns.md) |
 | overlay 的 copy-up、whiteout；FUSE 的请求队列 | VFS 对象与路径查找：[vfs/](../vfs/README.md)。页缓存见 [memory-management/08](../memory-management/08-page-cache-and-writeback.md) |
-| 网卡、路由、netfilter 状态跟着 `struct net` 走 | veth 转发、bridge、CNI 插件：以后的 networking 章。本章只点到入口 |
+| 网卡、路由、netfilter 状态跟着 `struct net` 走 | veth 转发、bridge、CNI 在内核里留下的设备：[networking/11](../networking/11-netns-veth-bridge.md)。本章只点到入口 |
 | 容器常用的 seccomp 过滤器、能力集、LSM 标签写入 | 完整 ptrace、审计、各 LSM 策略语言。进程章也把完整 seccomp 留在外面 |
 
 ## 源码地图
@@ -77,7 +77,7 @@
 
 ## 未覆盖
 
-- veth 的对端收发、bridge 转发数据库、CNI 插件协议
+- veth 的对端收发、bridge 转发数据库、CNI 插件协议。见 [networking/11](../networking/11-netns-veth-bridge.md)
 - runc 以外的运行时
 - ext4/xfs 盘上格式；overlay 的 upper 最终写到哪种文件系统
 - 完整 LSM 策略、seccomp 通知监听进程的业务协议

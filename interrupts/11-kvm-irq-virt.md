@@ -136,7 +136,7 @@ static void irqfd_inject(struct work_struct *work)
 }
 ```
 
-vhost 不直接调用 `kvm_set_irq`。`vhost_signal`（`drivers/vhost/vhost.c:2912`）在客户机需要通知时 `eventfd_signal(vq->call_ctx.ctx)`（`:2916`）。QEMU 把这个 eventfd 注册成 irqfd 之后，信号就进了上一节的路径。注释写的是 “This actually signals the guest, using eventfd.”（`:2911`）。
+vhost 不直接调用 `kvm_set_irq`。`vhost_signal`（`drivers/vhost/vhost.c:2912`）在客户机需要通知时 `eventfd_signal(vq->call_ctx.ctx)`（`:2916`）。QEMU 把这个 eventfd 注册成 irqfd 之后，信号就进了上一节的路径。注释写的是 “This actually signals the guest, using eventfd.”（`:2911`）。virtio-net 数据面里谁在 `handle_rx` / `handle_tx` 末尾走到这次 `vhost_signal`，在 [networking/14](../networking/14-virtio-net-host-vhost.md)。
 
 ---
 

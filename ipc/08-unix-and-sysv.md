@@ -2,7 +2,7 @@
 
 **结论**：`AF_UNIX` 在本章只回答「`unix_poll` 怎样向 epoll 报告可读可写」；System V 的消息、信号量和共享内存，以及 POSIX mqueue，各留一条创建调用链和睡眠点，不展开它们的队列算法。
 
-> `sk_buff`、发送队列长度怎样累加、`unix_stream_sendmsg` 里的字节账，留给以后的 networking 章。
+> `sk_buff`、发送队列长度怎样累加、`unix_stream_sendmsg` 里的字节账，在 [networking/10](../networking/10-af-unix.md)。
 > 对象所在的 `ipc_namespace` 见 [containerization/04](../containerization/04-pid-user-uts-ipc-time-ns.md)。
 
 新代码要在进程之间交一次事件，优先用 [07](./07-eventfd-signalfd-timerfd.md) 的 eventfd，或 [06](./06-pipe.md) 的管道。下面三条是内核里仍在的遗留接口，读代码时能对上号即可。
@@ -44,7 +44,7 @@ unix_poll(file, sock, wait)
 
 数据报的 `unix_dgram_poll`（`:3235`）同样先 `sock_poll_wait`。可读条件仍看接收队列和 `sk_is_readable`。可写在 `unix_writable` 之外还要看对端：对端存在、对端的 peer 不是自己、且 `unix_recvq_full_lockless(other)` 时，可能把 writable 清掉并 `unix_dgram_peer_wake_me`（`:3274`）。这是「对端接收队列满了，本地先不要报 `EPOLLOUT`」。
 
-`SCM_RIGHTS`（`include/linux/socket.h:177`，值 `0x01`）用来在消息上捎带文件描述符。`unix_stream_sendmsg`（`:2227`）调用 `scm_send`（`:2239`）；需要附带 fd 时 `unix_attach_fds`（`:1821`）把它们记到这条消息上。接收侧 `scm_recv_unix` 在 `unix_stream_recvmsg` 路径上（`:2499`）。fd 怎样安装进接收进程的 fd 表、引用怎样计，和 `sk_buff` 一起留给 networking 章。这里只需要知道：传 fd 的载体是 `AF_UNIX` 消息，不是 pipe。
+`SCM_RIGHTS`（`include/linux/socket.h:177`，值 `0x01`）用来在消息上捎带文件描述符。`unix_stream_sendmsg`（`:2227`）调用 `scm_send`（`:2239`）；需要附带 fd 时 `unix_attach_fds`（`:1821`）把它们记到这条消息上。接收侧流的 `scm_recv_unix` 在 `unix_stream_read_generic`（`af_unix.c:2940`），数据报在 `unix_dgram_recvmsg`（`:2499`）。fd 怎样安装进接收进程的 fd 表，在 [networking/10](../networking/10-af-unix.md)。这里只需要知道：传 fd 的载体是 `AF_UNIX` 消息，不是 pipe。
 
 ---
 

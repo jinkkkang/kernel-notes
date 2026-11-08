@@ -43,7 +43,7 @@ void raise_softirq(unsigned int nr)
 }
 ```
 
-已经关中断时用 `raise_softirq_irqoff`（`:694`）。真正置位的是 `__raise_softirq_irqoff`（`:720`）：`or_softirq_pending(1UL << nr)`，并打 `trace_softirq_raise`。`raise_softirq_irqoff` 在此之外多一步：当前既不在硬中断也不在 softirq 里（`!in_interrupt()`）时 `wakeup_softirqd()`（`:707`）。网络收包路径在 `____napi_schedule` 里若当前不在 `net_rx_action` 中，就 `raise_softirq_irqoff(NET_RX_SOFTIRQ)`（`net/core/dev.c:4649`）。那时通常已经在硬中断里，所以只置位，等 `irq_exit_rcu` 再跑。
+已经关中断时用 `raise_softirq_irqoff`（`:694`）。真正置位的是 `__raise_softirq_irqoff`（`:720`）：`or_softirq_pending(1UL << nr)`，并打 `trace_softirq_raise`。`raise_softirq_irqoff` 在此之外多一步：当前既不在硬中断也不在 softirq 里（`!in_interrupt()`）时 `wakeup_softirqd()`（`:707`）。网络收包路径在 `____napi_schedule` 里若当前不在 `net_rx_action` 中，就 `raise_softirq_irqoff(NET_RX_SOFTIRQ)`（`net/core/dev.c:4649`）。那时通常已经在硬中断里，所以只置位，等 `irq_exit_rcu` 再跑。`net_rx_action` 里怎样花掉预算、`NET_TX_SOFTIRQ` 怎样把 qdisc 再跑起来，在 [networking/04](../networking/04-netdev-and-napi.md) 和 [networking/06](../networking/06-tx-path-and-qdisc.md)。
 
 `open_softirq`（`softirq.c:727`）在启动时把函数指针写进 `softirq_vec[nr]`。运行中不要再增加新的 softirq 号；头文件注释（`interrupt.h:542`）建议用 tasklet 或线程。
 
