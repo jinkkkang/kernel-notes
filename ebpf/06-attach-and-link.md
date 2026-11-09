@@ -91,7 +91,7 @@ BPF_LINK_CREATE
 
 `flags` 非 0 则 `-EINVAL`（`:3658`）。`CONFIG_PERF_EVENTS` 关掉时这个函数返回 `-EOPNOTSUPP`（`:3695`）。
 
-`perf_event_set_bpf_prog` 把程序挂到已经存在的 perf event 上。event 是 kprobe 还是 tracepoint，由 `perf_event_open` 的 `attr.type` 决定。kprobe PMU 和 tracepoint PMU 的注册、断点指令、`kprobe_events` 文件格式，都在未来的 `tracing/`。本章只要求：fd 指向一个能接受 BPF 的 perf event，程序类型是 `KPROBE`、`TRACEPOINT` 或 `PERF_EVENT`。
+`perf_event_set_bpf_prog` 把程序挂到已经存在的 perf event 上。event 是 kprobe 还是 tracepoint，由 `perf_event_open` 的 `attr.type` 决定。kprobe PMU 和 tracepoint PMU 的注册、断点指令、`kprobe_events` 文件格式，在 [tracing/08](../tracing/08-kprobes-core.md) 和 [tracing/09](../tracing/09-kprobe-events.md)。本章只要求：fd 指向一个能接受 BPF 的 perf event，程序类型是 `KPROBE`、`TRACEPOINT` 或 `PERF_EVENT`。
 
 `BPF_PROG_TYPE_TRACEPOINT` 的类型表把 ctx 记成 `__u64`（`bpf_types.h:41`）。perf 把该事件的记录交给程序，字段来自 `TP_STRUCT__entry`。`sched_switch` 的字段在 `include/trace/events/sched.h:231`：`prev_comm`、`prev_pid`、`prev_prio`、`prev_state`、`next_comm`、`next_pid`、`next_prio`。
 
@@ -124,7 +124,7 @@ prog->aux->max_tp_access  > btp->writable_size           → -EINVAL
 tracepoint_probe_register_may_exist(tp, btp->bpf_func, prog)
 ```
 
-`max_ctx_offset` 是 verifier 看到的对 ctx 的最大读取。程序读了 `args[3]`，而这个 tracepoint 只有两个参数，装载可以通过（ctx 类型是变长的 `args[0]`），attach 会在这里失败。`tracepoint_probe_register_may_exist` 把 `btp->bpf_func` 登记成该 tracepoint 的探针，探针再调用 `bpf_trace_runN`。探针链表怎么挂、tracepoint 的 `static_call` 怎么改，留给 `tracing/`。摘除走 `bpf_probe_unregister`（`:2396`），里面是 `tracepoint_probe_unregister`。
+`max_ctx_offset` 是 verifier 看到的对 ctx 的最大读取。程序读了 `args[3]`，而这个 tracepoint 只有两个参数，装载可以通过（ctx 类型是变长的 `args[0]`），attach 会在这里失败。`tracepoint_probe_register_may_exist` 把 `btp->bpf_func` 登记成该 tracepoint 的探针，探针再调用 `bpf_trace_runN`。探针链表怎么挂、tracepoint 的 `static_call` 怎么改，见 [tracing/06](../tracing/06-tracepoint-and-TRACE_EVENT.md)。摘除走 `bpf_probe_unregister`（`:2396`），里面是 `tracepoint_probe_unregister`。
 
 可写变体 `RAW_TRACEPOINT_WRITABLE` 允许程序改某些事件提供的缓冲，verifier 用 `PTR_TO_TP_BUFFER` 跟踪这块内存。不是每个 raw tracepoint 都允许写。
 
@@ -157,7 +157,7 @@ ftrace_location(ip) 非 0：
   bpf_arch_text_poke(ip, BPF_MOD_CALL, NULL, image)
 ```
 
-`register_ftrace_direct` 和 `ftrace_set_filter_ip` 是 ftrace 的接口。direct call 怎样和函数图 tracer 共用一个入口、`ftrace_ops` 的标志位是什么意思，留给 `tracing/`。本章的边界是：BPF link 已经拿着目标函数地址和一份 trampoline 映像，接下来要么登记 direct call，要么对没有 ftrace 位置的地址做一次 `BPF_MOD_CALL` 的 text poke。
+`register_ftrace_direct` 和 `ftrace_set_filter_ip` 是 ftrace 的接口。direct call 怎样和函数图 tracer 共用一个入口、`ftrace_ops` 的标志位是什么意思，见 [tracing/04](../tracing/04-dynamic-ftrace.md)。本章的边界是：BPF link 已经拿着目标函数地址和一份 trampoline 映像，接下来要么登记 direct call，要么对没有 ftrace 位置的地址做一次 `BPF_MOD_CALL` 的 text poke。
 
 `BPF_PROG_TYPE_EXT` 走同一函数，但 `bpf_attach_type_to_tramp` 得到 `BPF_TRAMP_REPLACE`。trampoline 上已经有 fentry/fexit 时返回 `-EBUSY`；反过来，extension 占着 `tr->extension_prog` 时也不能再挂 fentry（`__bpf_trampoline_link_prog`，`:546`）。替换用 `bpf_arch_text_poke(..., BPF_MOD_JUMP, ...)`，把目标开头改成跳进扩展程序。
 

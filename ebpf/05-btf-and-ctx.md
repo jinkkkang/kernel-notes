@@ -51,7 +51,7 @@ fentry 一类程序在装载时给出 `attach_btf_id`。`bpf_prog_load` 在没�
 | `SK_LOOKUP` | `struct bpf_sk_lookup` | `struct bpf_sk_lookup_kern` | `:68` |
 | `NETFILTER` | `struct bpf_nf_ctx` | `struct bpf_nf_ctx` | `:84`，`CONFIG_NETFILTER_BPF_LINK` |
 
-x86 上 `bpf_user_pt_regs_t` 是通用定义 `typedef struct pt_regs`（`include/uapi/asm-generic/bpf_perf_event.h:7`）。kprobe 程序读的就是这份寄存器。断点怎样写进指令流，见未来的 `tracing/`。
+x86 上 `bpf_user_pt_regs_t` 是通用定义 `typedef struct pt_regs`（`include/uapi/asm-generic/bpf_perf_event.h:7`）。kprobe 程序读的就是这份寄存器。断点怎样写进指令流，见 [tracing/08](../tracing/08-kprobes-core.md)。
 
 `struct __sk_buff`（`bpf.h:6101`）的前段是稳定字段：`len`、`mark`、`protocol`、`ifindex`、`data`、`data_end`、`data_meta`。`data` / `data_end` 在程序里是指针，verifier 把它们标成 `PTR_TO_PACKET` 和 `PTR_TO_PACKET_END`。直接解引用 `sk_buff` 的内核字段不在这张 UAPI 上，那是 `BPF_PROG_TYPE_TRACING` 加 BTF 才能做的事。
 
@@ -80,7 +80,7 @@ struct bpf_raw_tracepoint_args {
 };
 ```
 
-`__bpf_trace_run`（`kernel/trace/bpf_trace.c:2314`）把 `u64 *args` 交给 `bpf_prog_run`。`args[0]` 起对应 tracepoint `TP_ARGS` 的参数，按 64 位存放。`BPF_PROG_TYPE_TRACEPOINT` 的类型表把 ctx 记成 `__u64`；它走 perf event，读到的是该事件 `TP_STRUCT__entry` 的记录。字段名以事件头文件为准，宏怎么展开留给 `tracing/`。`sched_switch` 的记录布局在 `include/trace/events/sched.h:222`，调度章的观测节用同一份字段。
+`__bpf_trace_run`（`kernel/trace/bpf_trace.c:2314`）把 `u64 *args` 交给 `bpf_prog_run`。`args[0]` 起对应 tracepoint `TP_ARGS` 的参数，按 64 位存放。`BPF_PROG_TYPE_TRACEPOINT` 的类型表把 ctx 记成 `__u64`；它走 perf event，读到的是该事件 `TP_STRUCT__entry` 的记录。字段名以事件头文件为准，宏怎么展开见 [tracing/06](../tracing/06-tracepoint-and-TRACE_EVENT.md)。`sched_switch` 的记录布局在 `include/trace/events/sched.h:222`，调度章的观测节用同一份字段。
 
 `BPF_PROG_TYPE_TRACING` 的 ctx 是 `void *`。fentry 的 R1 起是目标函数的参数，类型来自 `attach_btf_id` 的函数原型。fexit 还可以读返回值。这个类型的 `expected_attach_type` 在装载时就定成 `BPF_TRACE_FENTRY`、`BPF_TRACE_FEXIT`、`BPF_MODIFY_RETURN` 或 `BPF_TRACE_RAW_TP`，attach 时必须一致（`link_create` 里的检查，见 [06](./06-attach-and-link.md)）。
 

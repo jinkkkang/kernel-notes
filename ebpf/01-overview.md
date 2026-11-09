@@ -1,6 +1,6 @@
 # 1. 总览
 
-**结论**：经典 cBPF 是给套接字过滤用的累加器机器；eBPF 是 10 个 64 位寄存器的指令机，由 `bpf(2)` 装载，verifier 通过之后才能跑。观测事件的基础设施在未来的 `tracing/`，本章写 BPF 程序怎么被装进去、怎么挂到已经存在的挂钩上。
+**结论**：经典 cBPF 是给套接字过滤用的累加器机器；eBPF 是 10 个 64 位寄存器的指令机，由 `bpf(2)` 装载，verifier 通过之后才能跑。观测事件的基础设施在 [tracing/](../tracing/README.md)，本章写 BPF 程序怎么被装进去、怎么挂到已经存在的挂钩上。
 
 > cBPF 指令在 `include/uapi/linux/filter.h:24`。eBPF 指令在 `include/uapi/linux/bpf.h:72`，类编码的公共宏在 `include/uapi/linux/bpf_common.h`。系统调用入口是 `kernel/bpf/syscall.c:5599` 的 `SYSCALL_DEFINE3(bpf, ...)`。
 
@@ -44,12 +44,12 @@ ftrace 的环缓冲、`tracepoint` 宏、kprobe 断点是事件的生产端。BP
 
 | 角色 | 本章怎么对待 |
 |------|----------------|
-| ftrace / kprobe 的内核实现 | 未来 `tracing/`。本章写 BPF 侧 attach 和 ctx |
+| ftrace / kprobe 的内核实现 | [tracing/](../tracing/README.md)。本章写 BPF 侧 attach 和 ctx |
 | `perf` | 打开 kprobe / tracepoint 的 perf event，再把 `bpf_prog` 设进去 |
 | bpftrace | 用户态前端，把脚本变成 BPF 程序再走上面的装载。源码不在内核树里 |
 | libbpf / bpftool | 随内核树的 `tools/lib/bpf`、`tools/bpf/bpftool`。见 [11](./11-tooling.md) |
 
-`trace_sys_enter` 在系统调用入口的第 4 步，顺序写在 [syscalls/09](../syscalls/09-hooks.md)。用 `BPF_PROG_TYPE_RAW_TRACEPOINT` 去订 `sys_enter` 时，本章只说明 `bpf_raw_tracepoint_open` 和 ctx 里的 `u64` 参数；tracepoint 本身怎么进环缓冲，留给 `tracing/`。
+`trace_sys_enter` 在系统调用入口的第 4 步，顺序写在 [syscalls/09](../syscalls/09-hooks.md)。用 `BPF_PROG_TYPE_RAW_TRACEPOINT` 去订 `sys_enter` 时，本章只说明 `bpf_raw_tracepoint_open` 和 ctx 里的 `u64` 参数；tracepoint 本身怎么进环缓冲，见 [tracing/06](../tracing/06-tracepoint-and-TRACE_EVENT.md)。
 
 ---
 
@@ -57,6 +57,6 @@ ftrace 的环缓冲、`tracepoint` 宏、kprobe 断点是事件的生产端。BP
 
 写：指令格式、`bpf_prog` 的装载和 JIT 入口、verifier 的状态与剪枝、map 的类型和锁、BTF/CO-RE 的数据布局、`bpf_link` 的 attach 表、XDP 从 `xdp_buff` 到动作码、tc/cgroup/sock/netfilter 的 BPF 挂钩、helper 与 tail call、bpffs 与权限、观测和排障配方。
 
-不写：ftrace 环、`register_kprobe`、函数图 tracer、seccomp 的 cBPF 语义、某个子系统事件的业务含义、物理网卡的描述符环。XDP 在驱动里的入口停在 `ndo_bpf`（`include/linux/netdevice.h:1640`）。virtio-net 队列上的 `rq->xdp_prog` 已经在 [networking/13](../networking/13-virtio-net-guest.md) 点过名，程序和动作码在 [07](./07-xdp.md)。
+不写：ftrace 环、`register_kprobe`、函数图 tracer（见 [tracing/](../tracing/README.md)）、seccomp 的 cBPF 语义、某个子系统事件的业务含义、物理网卡的描述符环。XDP 在驱动里的入口停在 `ndo_bpf`（`include/linux/netdevice.h:1640`）。virtio-net 队列上的 `rq->xdp_prog` 已经在 [networking/13](../networking/13-virtio-net-guest.md) 点过名，程序和动作码在 [07](./07-xdp.md)。
 
 *笔记生成对照源码：Linux v6.6.160。内核树不放进本仓库。*
