@@ -21,7 +21,8 @@
 | [vfs/](./vfs/) | **虚拟文件系统（大章）**：`dentry` / `inode` / `file`、路径查找、fd 与 open/close、读写与页缓存交接、splice/sendfile、mmap、挂载与传播、dcache/icache、文件锁与 inotify/fanotify、tmpfs 走读、proc/sysfs/debugfs、观测与性能配方。页缓存和回写的内存侧见 memory-management。 |
 | [ipc/](./ipc/) | **本地 IPC 与多路复用（大章）**：select/poll 的 `poll_table`、epoll 的对象与 `epoll_ctl` / `epoll_wait`、LT/ET/ONESHOT/EXCLUSIVE、pipe 的创建和读写唤醒、eventfd/signalfd/timerfd、`AF_UNIX` 就绪与 SysV/POSIX mqueue 薄写、观测与配方。futex 见 locks-and-ds，inotify 见 vfs，`sk_buff` 与完整收发见 networking。 |
 | [networking/](./networking/) | **网络栈（大章）**：`sk_buff`、`socket`/`sock`、`net_device` 与 NAPI、收发包与 qdisc、IPv4 路由与邻居、TCP/UDP、`AF_UNIX` 收发、netns 里的 veth/bridge、netfilter 挂钩、客户机 virtio-net、宿主机 tap/`vhost_net`、多队列与 RPS/XPS、观测与配方。epoll 见 ipc，softirq 见 interrupts，`struct net` 的创建见 containerization。XDP 程序见 ebpf。 |
-| [ebpf/](./ebpf/) | **eBPF（大章）**：`bpf(2)` 装载、`bpf_insn` 与 JIT、verifier、map、BTF/CO-RE、`bpf_link`（kprobe / tracepoint / raw tp / fentry 的 BPF 侧）、XDP、tc/cgroup/sock/netfilter BPF、helper 与 tail call、bpffs、bpftool/libbpf、观测与配方。ftrace 环与 kprobe 断点留给未来的 tracing。seccomp cBPF 见 containerization 与 syscalls。 |
+| [ebpf/](./ebpf/) | **eBPF（大章）**：`bpf(2)` 装载、`bpf_insn` 与 JIT、verifier、map、BTF/CO-RE、`bpf_link`（kprobe / tracepoint / raw tp / fentry 的 BPF 侧）、XDP、tc/cgroup/sock/netfilter BPF、helper 与 tail call、bpffs、bpftool/libbpf、观测与配方。ftrace 环、`TRACE_EVENT` 与 kprobe 断点见 tracing。seccomp cBPF 见 containerization 与 syscalls。 |
+| [tracing/](./tracing/) | **追踪（大章）**：ftrace 环缓冲与 tracefs、动态 ftrace（`ftrace_ops`、`register_ftrace_direct`）、function / function_graph、`TRACE_EVENT` 与探针链、event filter/trigger、`register_kprobe` 与优化 trampoline、`kprobe_events`、uprobe 薄写、观测与配方。BPF attach 与 ctx 见 ebpf。 |
 | [block-io/](./block-io/) | **块层与 IO（大章）**：`bio` / `request`、blk-mq、`none` / mq-deadline / kyber / bfq、多队列亲和、ioprio 与 cgroup io、回写与 fsync、Direct IO、io_uring、NVMe 与 virtio-blk 走读、错误与超时、观测与性能配方。页缓存回写的内存侧见 memory-management，cgroup 文件见 cgroup。 |
 | [containerization/](./containerization/) | **容器化（大章）**：八种命名空间与 `nsproxy`、`pivot_root`、user ns 映射、net ns（veth/bridge 细节见 networking）、容器里的 cgroup、overlayfs、FUSE、runc v1.5.2 创建路径、seccomp/能力/LSM 边界、观测与坑。PID 分配见 process-management，控制器见 cgroup，挂载传播见 vfs。 |
 
@@ -224,6 +225,24 @@
 | [11-tooling.md](./ebpf/11-tooling.md) | libbpf、bpftool、bpftrace、perf |
 | [12-observability.md](./ebpf/12-observability.md) | sysctl、fdinfo、verifier log |
 | [13-perf-analysis.md](./ebpf/13-perf-analysis.md) | 拒载、map 争用、XDP 丢包、attach 开销 |
+
+### 追踪子章节
+
+| 文件 | 内容 |
+|------|------|
+| [README.md](./tracing/README.md) | 章节目录、阅读顺序、与 ebpf / scheduler 的边界 |
+| [01-overview.md](./tracing/01-overview.md) | probe 到环到 tracefs；与 perf / eBPF 的分工 |
+| [02-ring-buffer.md](./tracing/02-ring-buffer.md) | `trace_buffer`、reserve/commit、reader 页、overwrite |
+| [03-tracefs-and-array.md](./tracing/03-tracefs-and-array.md) | `trace_array`、instances、`current_tracer`、`buffer_size_kb` |
+| [04-dynamic-ftrace.md](./tracing/04-dynamic-ftrace.md) | `ftrace_ops`、filter、trampoline、`register_ftrace_direct` |
+| [05-function-and-graph.md](./tracing/05-function-and-graph.md) | function 与 function_graph、shadow stack |
+| [06-tracepoint-and-TRACE_EVENT.md](./tracing/06-tracepoint-and-TRACE_EVENT.md) | `TRACE_EVENT`、`static_call`、event 文件 |
+| [07-event-filter-trigger.md](./tracing/07-event-filter-trigger.md) | filter、trigger；hist / synth 薄写 |
+| [08-kprobes-core.md](./tracing/08-kprobes-core.md) | `register_kprobe`、int3、优化 trampoline |
+| [09-kprobe-events.md](./tracing/09-kprobe-events.md) | `kprobe_events` 与参数抓取 |
+| [10-uprobe.md](./tracing/10-uprobe.md) | `uprobe_events`、inode+offset |
+| [11-observability.md](./tracing/11-observability.md) | `/sys/kernel/tracing` 与本机采样 |
+| [12-perf-analysis.md](./tracing/12-perf-analysis.md) | 开销、丢事件、选型与 RECIPE |
 
 ### 块层与 IO 子章节
 

@@ -47,7 +47,7 @@
 
 | 本章写到哪 | 留给别章 |
 |---|---|
-| kprobe / tracepoint / raw tracepoint 的 BPF 程序类型、ctx、`bpf_link` 怎么挂上 | ftrace 环缓冲、`TRACE_EVENT` 宏展开、`register_kprobe`、优化 trampoline、function / function_graph：未来的 `tracing/`。本章在 `register_fentry` 调用 `register_ftrace_direct` 处停下 |
+| kprobe / tracepoint / raw tracepoint 的 BPF 程序类型、ctx、`bpf_link` 怎么挂上 | ftrace 环缓冲、`TRACE_EVENT` 宏展开、`register_kprobe`、优化 trampoline、function / function_graph 在 [tracing/](../tracing/README.md)。本章在 `register_fentry` 调用 `register_ftrace_direct` 处停下，direct call 的实现见 [tracing/04](../tracing/04-dynamic-ftrace.md) |
 | 子系统事件的字段语义（`sched_switch`、`irq:`、`block:`） | 各章 observability。本章只说明 BPF 侧怎么读 ctx |
 | seccomp 的 cBPF 过滤与 `SECCOMP_RET_*` | [containerization/10-seccomp-caps-lsm.md](../containerization/10-seccomp-caps-lsm.md)、[syscalls/09-hooks.md](../syscalls/09-hooks.md) |
 | `sk_buff`、NAPI、`ndo_start_xmit`、qdisc 本体 | [networking/](../networking/README.md)。XDP / tc / sockops 的程序与动作码在本章 |
@@ -84,7 +84,7 @@
 
 ## 未覆盖
 
-- ftrace 环缓冲、`TRACE_EVENT` 展开、kprobe 断点与优化 trampoline 的实现
+- ftrace 环缓冲、`TRACE_EVENT` 展开、kprobe 断点与优化 trampoline 的实现，见 [tracing/](../tracing/README.md)
 - seccomp cBPF 的返回码语义
 - 各子系统 tracepoint 的字段含义
 - 物理网卡驱动里 XDP 的 DMA 环
