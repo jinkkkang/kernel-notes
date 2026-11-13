@@ -51,6 +51,7 @@
 | P2 | LDS-FUTEX-KMOD | locks `futex_enter.bt` + 三件 kmod + §8.7 wait kprobe |
 | P2 | SCH-NUMA | 多节点才做 NUMA balancing；单节点标 blocked |
 | P2 | MM-KMEMLEAK | kmemleak；未编 `CONFIG_DEBUG_KMEMLEAK` 则 blocked |
+| P2 | IMW-KMOD-WQ | init-modules-wq demo 01：测试机加载 `kn_demo_wq` |
 | P2 | 其余各章 observability 尾巴 | 见分章。`IRQ-KVM` 已 blocked，不要领 |
 
 ---
@@ -251,6 +252,16 @@
 | CTR-PIVOT | open | `pivot_root` 最小演练 | `containerization/11-observability.md` §11.6 第二条；`containerization/03-mount-ns-pivot-root.md`；`containerization/12-perf-and-pitfalls.md` §12.5 | **禁止共享机**。用临时 rootfs。父挂载仍是 shared 时内核返回 `-EINVAL` | 成功步骤 + 警告 |
 | CTR-NETNS-MOVE | open | `ip link set … netns` | `containerization/11-observability.md` §11.6 第三条；`containerization/05-net-ns.md` | 自建 veth；还原。没有 `ip` 就 blocked | 实测或 blocked |
 | CTR-OVL-FUSE | open | `perf probe -a ovl_copy_up_file`；fusectl `waiting` | `containerization/12-perf-and-pitfalls.md` §12.1、§12.4 | overlay 上触发一次写打开的 copy-up。有 FUSE 连接再读 `/sys/fs/fuse/connections/<id>/waiting`。§11.4 的只读参数不要重贴成新实测 | 实测或 blocked |
+
+---
+
+### 2.15 init-modules-wq/
+
+**已有**：`demos/01-kmod-wq.c`、`Makefile`、`01-run.sh` 已进树。脚本默认 DRY-RUN，不 `make`、不 `insmod`。章 README 的「实测 vs RECIPE」写明写作时没有加载。`11-observability.md` 与 `12-perf-analysis.md` 的命令都是 RECIPE，没有贴过 `/proc` 或 dmesg。
+
+| ID | 状态 | 补什么 | 落到哪里 | 建议动作 | 验收 |
+|----|------|--------|----------|----------|------|
+| IMW-KMOD-WQ | open | 在测试机上跑通 demo 01 的加载路径 | `init-modules-wq/demos/01-kmod-wq.c`、`init-modules-wq/demos/01-run.sh`、`init-modules-wq/demos/Makefile`、`init-modules-wq/demos/README.md`；`init-modules-wq/README.md`「实测 vs RECIPE」；`init-modules-wq/12-perf-analysis.md` 的 RECIPE-M1 | **非生产**机，具备 `CAP_SYS_MODULE` 且有 `/lib/modules/$(uname -r)/build`。先不带变量跑 `01-run.sh`，确认只有 DRY-RUN。再 `sudo KN_DEMO_LOAD=1 ./01-run.sh`。脚本会 `insmod kn_demo_wq.ko`、读 `/proc/modules`、`/sys/module/kn_demo_wq/`、`/sys/bus/workqueue/devices/kn-demo-wq/`，并在目录存在时记录 `/sys/devices/virtual/workqueue/kn-demo-wq/`（不在不算失败），然后 `rmmod`。不要在本 ID 里打开 `initcall_debug` 或改 `watchdog_thresh` | demos README 把状态从 **待真机验证** 改成 MEASURED，贴整段 stdout，标 `sampled on <uname -r>`。三条 dmesg（init / work / exit）必须来自这次 token，不能手写。失败则保持 `open` 或改 `blocked`，写明缺头文件还是缺权限。章 README 的 RECIPE 句改成指向这次实测 |
 
 ---
 

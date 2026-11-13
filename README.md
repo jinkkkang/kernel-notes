@@ -25,6 +25,7 @@
 | [tracing/](./tracing/) | **追踪（大章）**：ftrace 环缓冲与 tracefs、动态 ftrace（`ftrace_ops`、`register_ftrace_direct`）、function / function_graph、`TRACE_EVENT` 与探针链、event filter/trigger、`register_kprobe` 与优化 trampoline、`kprobe_events`、uprobe 薄写、观测与配方。BPF attach 与 ctx 见 ebpf。 |
 | [block-io/](./block-io/) | **块层与 IO（大章）**：`bio` / `request`、blk-mq、`none` / mq-deadline / kyber / bfq、多队列亲和、ioprio 与 cgroup io、回写与 fsync、Direct IO、io_uring、NVMe 与 virtio-blk 走读、错误与超时、观测与性能配方。页缓存回写的内存侧见 memory-management，cgroup 文件见 cgroup。 |
 | [containerization/](./containerization/) | **容器化（大章）**：八种命名空间与 `nsproxy`、`pivot_root`、user ns 映射、net ns（veth/bridge 细节见 networking）、容器里的 cgroup、overlayfs、FUSE、runc v1.5.2 创建路径、seccomp/能力/LSM 边界、观测与坑。PID 分配见 process-management，控制器见 cgroup，挂载传播见 vfs。 |
+| [init-modules-wq/](./init-modules-wq/) | **内核初始化、模块与工作队列（大章）**：`start_kernel` 到 pid 1 与 initcall、`finit_module` → `load_module` → `do_init_module`、cmwq 的 pool / pwq / worker。工作队列和中断线程、softirq、`irq_work` 怎么选见 interrupts。 |
 
 ### 进程管理子章节
 
@@ -289,6 +290,25 @@
 | [10-seccomp-caps-lsm.md](./containerization/10-seccomp-caps-lsm.md) | seccomp、能力、LSM 边界 |
 | [11-observability.md](./containerization/11-observability.md) | `lsns`、nsfs、cgroup、overlay 参数、fusectl |
 | [12-perf-and-pitfalls.md](./containerization/12-perf-and-pitfalls.md) | copy-up 放大、user ns 映射、cgroup v1/v2、FUSE 延迟 |
+
+### 内核初始化、模块与工作队列子章节
+
+| 文件 | 内容 |
+|------|------|
+| [README.md](./init-modules-wq/README.md) | 章节目录、阅读顺序、与中断 / 进程 / 调度的边界 |
+| [01-overview.md](./init-modules-wq/01-overview.md) | 启动、装模块、cmwq 三条线 |
+| [02-start-kernel.md](./init-modules-wq/02-start-kernel.md) | `start_kernel`：调度、`workqueue_init_early`、开中断 |
+| [03-rest-init-and-pid1.md](./init-modules-wq/03-rest-init-and-pid1.md) | pid 1、kthreadd、`kernel_execve` |
+| [04-initcalls.md](./init-modules-wq/04-initcalls.md) | early 与 pure…late，`initcall_debug` |
+| [05-module-objects.md](./init-modules-wq/05-module-objects.md) | `struct module`、状态、`mod_mem_type` |
+| [06-module-load.md](./init-modules-wq/06-module-load.md) | `finit_module` → `load_module` → `do_init_module` |
+| [07-module-unload.md](./init-modules-wq/07-module-unload.md) | `delete_module`、`refcnt`、依赖链表 |
+| [08-kmod-request.md](./init-modules-wq/08-kmod-request.md) | `__request_module` 与 `call_modprobe` |
+| [09-cmwq-objects.md](./init-modules-wq/09-cmwq-objects.md) | `work_struct`、pool、pwq、worker |
+| [10-cmwq-queue-and-flags.md](./init-modules-wq/10-cmwq-queue-and-flags.md) | 入队、`WQ_*`、`schedule_work` → `system_percpu_wq` |
+| [11-observability.md](./init-modules-wq/11-observability.md) | `/proc/modules`、sysfs、tracepoint。RECIPE |
+| [12-perf-analysis.md](./init-modules-wq/12-perf-analysis.md) | 装载失败、积压、rescuer、watchdog。RECIPE |
+| [demos/](./init-modules-wq/demos/) | demo 01 源码写完，默认不 `insmod`（**待真机验证**） |
 
 ## 约定
 

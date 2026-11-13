@@ -46,6 +46,8 @@
 
 和中断线程的差别：工作队列是共享的，不自动 mask 那条 IRQ。驱动要自己在硬中断里 mask，在工作函数末尾 unmask，否则中断会在工作还没跑完时再次进来。
 
+pool、pwq、worker，以及 `schedule_work` 在 v6.6.160 里实际调用的队列，写在 [init-modules-wq/](../init-modules-wq/README.md)。本节只回答该不该离开硬中断。
+
 ---
 
 ## 9.4 `irq_work`
