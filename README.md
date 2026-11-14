@@ -26,6 +26,7 @@
 | [block-io/](./block-io/) | **块层与 IO（大章）**：`bio` / `request`、blk-mq、`none` / mq-deadline / kyber / bfq、多队列亲和、ioprio 与 cgroup io、回写与 fsync、Direct IO、io_uring、NVMe 与 virtio-blk 走读、错误与超时、观测与性能配方。页缓存回写的内存侧见 memory-management，cgroup 文件见 cgroup。 |
 | [containerization/](./containerization/) | **容器化（大章）**：八种命名空间与 `nsproxy`、`pivot_root`、user ns 映射、net ns（veth/bridge 细节见 networking）、容器里的 cgroup、overlayfs、FUSE、runc v1.5.2 创建路径、seccomp/能力/LSM 边界、观测与坑。PID 分配见 process-management，控制器见 cgroup，挂载传播见 vfs。 |
 | [init-modules-wq/](./init-modules-wq/) | **内核初始化、模块与工作队列（大章）**：`start_kernel` 到 pid 1 与 initcall、`finit_module` → `load_module` → `do_init_module`、cmwq 的 pool / pwq / worker。工作队列和中断线程、softirq、`irq_work` 怎么选见 interrupts。 |
+| [ondisk-fs-iomap/](./ondisk-fs-iomap/) | **盘上文件系统与 iomap（选修）**：ext4 / XFS 的盘上结构、`buffer_head` 与 iomap 的分界、缓冲读写与回写、Direct IO、delalloc / unwritten、jbd2 与 XFS CIL、fsync。页缓存见 memory-management，bio 见 block-io。 |
 
 ### 进程管理子章节
 
@@ -309,6 +310,25 @@
 | [11-observability.md](./init-modules-wq/11-observability.md) | `/proc/modules`、sysfs、tracepoint。RECIPE |
 | [12-perf-analysis.md](./init-modules-wq/12-perf-analysis.md) | 装载失败、积压、rescuer、watchdog。RECIPE |
 | [demos/](./init-modules-wq/demos/) | demo 01 源码写完，默认不 `insmod`（**待真机验证**） |
+
+### 盘上文件系统与 iomap 子章节
+
+| 文件 | 内容 |
+|------|------|
+| [README.md](./ondisk-fs-iomap/README.md) | 章节目录、阅读顺序、与 VFS / 内存 / 块层的边界 |
+| [01-overview.md](./ondisk-fs-iomap/01-overview.md) | 盘上 FS 的职责；buffer_head 与 iomap 的分界 |
+| [02-ondisk-layout.md](./ondisk-fs-iomap/02-ondisk-layout.md) | superblock、inode、extent / B+tree、位图与分配组 |
+| [03-buffer-head.md](./ondisk-fs-iomap/03-buffer-head.md) | `block_write_begin`、`get_block_t` |
+| [04-iomap-model.md](./ondisk-fs-iomap/04-iomap-model.md) | `struct iomap`、`iomap_ops`、`iomap_iter` |
+| [05-buffered-io.md](./ondisk-fs-iomap/05-buffered-io.md) | `iomap_file_buffered_write`、folio 子块状态、readahead |
+| [06-writeback.md](./ondisk-fs-iomap/06-writeback.md) | `iomap_writepages` 组 bio；ext4 仍走 `ext4_writepages` |
+| [07-direct-io.md](./ondisk-fs-iomap/07-direct-io.md) | `iomap_dio_rw`、对齐、同步 / 异步完成 |
+| [08-delalloc-unwritten.md](./ondisk-fs-iomap/08-delalloc-unwritten.md) | 延迟分配、unwritten 转换、fallocate / punch hole |
+| [09-ext4-jbd2.md](./ondisk-fs-iomap/09-ext4-jbd2.md) | jbd2 handle / commit / checkpoint；ext4 哪些路径用 iomap |
+| [10-xfs-log.md](./ondisk-fs-iomap/10-xfs-log.md) | CIL、log item，和 jbd2 的差异 |
+| [11-fsync-crash.md](./ondisk-fs-iomap/11-fsync-crash.md) | `vfs_fsync_range` → `->fsync`、flush/FUA、rename 边界 |
+| [12-observability.md](./ondisk-fs-iomap/12-observability.md) | tracepoint、`filefrag`、回写 / 日志 / fsync 的配方。RECIPE |
+| [demos/](./ondisk-fs-iomap/demos/) | demo 01 默认 DRY-RUN，自建 loop 上看 extent（**待真机验证**） |
 
 ## 约定
 
