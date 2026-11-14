@@ -21,7 +21,7 @@ mapping->a_ops->direct_IO(iocb, iter)
 
 写是 `generic_file_direct_write`（`mm/filemap.c:3935`）调用同一个 `direct_IO`。没写完且不是 DAX 时，`direct_write_fallback` 再走缓冲写。所以一次 `O_DIRECT` 写仍可能在尾巴上产生脏页。那是 VFS 的回退，不是块层把 direct bio 改成了缓冲 bio。
 
-`do_dentry_open` 只有在 `a_ops->direct_IO` 非空时才置 `FMODE_CAN_ODIRECT`（`fs/open.c:942`）。有的文件系统把这个函数设成 `noop_direct_IO`（`fs/libfs.c:1567`），它返回 `-EINVAL`，只为了让 open 通过，真正的 IO 走 iomap 而不是这个函数指针。注释在 `libfs.c:1569`。ext4、xfs 在 6.6 的缓冲/直接写主路径上用 iomap，下面第 3 节就是那条。
+`do_dentry_open` 只有在 `a_ops->direct_IO` 非空时才置 `FMODE_CAN_ODIRECT`（`fs/open.c:942`）。有的文件系统把这个函数设成 `noop_direct_IO`（`fs/libfs.c:1567`），它返回 `-EINVAL`，只为了让 open 通过，真正的 IO 走 iomap 而不是这个函数指针。注释在 `libfs.c:1569`。ext4、xfs 在 6.6 的直接写主路径上用 iomap，下面第 3 节就是那条。缓冲写不是这条：xfs 是 `xfs_file_buffered_write` → `iomap_file_buffered_write`（`fs/xfs/xfs_file.c:758`、`:779`）；ext4 是 `ext4_file_write_iter`（`fs/ext4/file.c:691`）→ `ext4_buffered_write_iter`（`:285`）→ `generic_perform_write`（`:306`），走 `write_begin` / `write_end`，不进 `iomap_file_buffered_write`。
 
 ---
 

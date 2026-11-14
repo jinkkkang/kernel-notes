@@ -22,14 +22,16 @@ balance_dirty_pages / 周期定时器
 
 `struct writeback_control` 在 `include/linux/writeback.h:42`。和块层有关的是 `sync_mode`：`WB_SYNC_NONE` 不等每个 mapping，`WB_SYNC_ALL` 会等。`fsync` 走的是后面这种。`nr_to_write` 限制这一轮最多写多少页，用完 flusher 可以换下一个 inode。
 
-文件系统填哪一个 `writepages`，决定 bio 怎么组。6.6 里常见两条：
+文件系统填哪一个 `writepages`，决定 bio 怎么组。6.6 里通用的两条：
 
 | 路径 | 谁用 | 组 bio 的函数 |
 |---|---|---|
 | `fs/mpage.c` | 仍用 `get_block` 的文件系统 | `mpage_writepages` 里的 `__mpage_writepage`（`:469`） |
-| `fs/iomap/buffered-io.c` | iomap（xfs、以及走 iomap 的 ext4 缓冲写） | `iomap_writepages`（`:2036`） |
+| `fs/iomap/buffered-io.c` | xfs（`xfs_vm_writepages`） | `iomap_writepages`（`:2036`） |
 
 两条都在最后调用 `submit_bio`。页缓存的 xarray、`PAGECACHE_TAG_DIRTY`、`folio_start_writeback` 仍是内存章的内容。块层看到的是一个已经标了 `PG_writeback` 的 folio，外加 `bi_end_io` 里要 `folio_end_writeback`。
+
+ext4 的缓冲写停在 `write_begin` / `write_end`：`ext4_file_write_iter`（`fs/ext4/file.c:691`）→ `ext4_buffered_write_iter`（`:285`）→ `generic_perform_write`（`:306`）。回写是 `ext4_writepages`（`fs/ext4/inode.c:2806`）→ `ext4_do_writepages`（`:2565`），自己的 mpage 路径。这两段都不调用 `iomap_file_buffered_write` 或 `iomap_writepages`。xfs 的缓冲写和缓冲回写交给 iomap：`xfs_file_buffered_write` → `iomap_file_buffered_write`（`fs/xfs/xfs_file.c:758`、`:779`），`xfs_vm_writepages` → `iomap_writepages`（`fs/xfs/xfs_aops.c:473`、`:480`）。
 
 ---
 
@@ -56,6 +58,8 @@ mpage_write_end_io                :62
 ---
 
 ## 10.3 iomap：ioend 包着 bio
+
+xfs 的 `xfs_vm_writepages`（`fs/xfs/xfs_aops.c:473`）调用 `iomap_writepages`（`:480`）。ext4 的缓冲回写是 `ext4_writepages`，见 §10.1。
 
 iomap 先按映射区间把脏页收成 `struct iomap_ioend`，bio 挂在 `ioend->io_bio` 上。一个 ioend 对应一段连续的磁盘映射。映射变了就结束当前 ioend、提交，再分配下一个。
 
@@ -187,6 +191,11 @@ Direct IO 不走这一节的标脏和 writeback。它的 bio 在 [11](./11-direc
 | `fs/mpage.c` | `mpage_bio_submit_write` | 86 | `bi_end_io = mpage_write_end_io`，然后 `submit_bio` |
 | `fs/mpage.c` | `mpage_write_end_io` | 62 | 错误记到 mapping，`folio_end_writeback` |
 | `fs/iomap/buffered-io.c` | `iomap_writepages` | 2036 | iomap 回写入口 |
+| `fs/xfs/xfs_aops.c` | `xfs_vm_writepages` | 473 | xfs 缓冲回写，调用 `iomap_writepages`（`:480`） |
+| `fs/xfs/xfs_file.c` | `xfs_file_buffered_write` | 758 | xfs 缓冲写，调用 `iomap_file_buffered_write`（`:779`） |
+| `fs/ext4/inode.c` | `ext4_writepages` | 2806 | ext4 缓冲回写，自己的 mpage，不进 `iomap_writepages` |
+| `fs/ext4/file.c` | `ext4_file_write_iter` | 691 | ext4 写入口；缓冲时进 `ext4_buffered_write_iter` |
+| `fs/ext4/file.c` | `ext4_buffered_write_iter` | 285 | ext4 缓冲写，调 `generic_perform_write`（`:306`） |
 | `fs/iomap/buffered-io.c` | `iomap_submit_ioend` | 1672 | `submit_bio(ioend->io_bio)` |
 | `fs/iomap/buffered-io.c` | `iomap_writepage_end_bio` | 1657 | 完成时把状态交给 ioend |
 | `block/blk-flush.c` | `blk_insert_flush` | 404 | 把 PREFLUSH/FUA 拆成 flush 序列 |
