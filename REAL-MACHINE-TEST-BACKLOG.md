@@ -52,6 +52,7 @@
 | P2 | SCH-NUMA | 多节点才做 NUMA balancing；单节点标 blocked |
 | P2 | MM-KMEMLEAK | kmemleak；未编 `CONFIG_DEBUG_KMEMLEAK` 则 blocked |
 | P2 | IMW-KMOD-WQ | init-modules-wq demo 01：测试机加载 `kn_demo_wq` |
+| P2 | OFS-LOOP-EXTENT | ondisk-fs-iomap demo 01：自建 loop 上 `filefrag -v` |
 | P2 | 其余各章 observability 尾巴 | 见分章。`IRQ-KVM` 已 blocked，不要领 |
 
 ---
@@ -262,6 +263,16 @@
 | ID | 状态 | 补什么 | 落到哪里 | 建议动作 | 验收 |
 |----|------|--------|----------|----------|------|
 | IMW-KMOD-WQ | open | 在测试机上跑通 demo 01 的加载路径 | `init-modules-wq/demos/01-kmod-wq.c`、`init-modules-wq/demos/01-run.sh`、`init-modules-wq/demos/Makefile`、`init-modules-wq/demos/README.md`；`init-modules-wq/README.md`「实测 vs RECIPE」；`init-modules-wq/12-perf-analysis.md` 的 RECIPE-M1 | **非生产**机，具备 `CAP_SYS_MODULE` 且有 `/lib/modules/$(uname -r)/build`。先不带变量跑 `01-run.sh`，确认只有 DRY-RUN。再 `sudo KN_DEMO_LOAD=1 ./01-run.sh`。脚本会 `insmod kn_demo_wq.ko`、读 `/proc/modules`、`/sys/module/kn_demo_wq/`、`/sys/bus/workqueue/devices/kn-demo-wq/`，并在目录存在时记录 `/sys/devices/virtual/workqueue/kn-demo-wq/`（不在不算失败），然后 `rmmod`。不要在本 ID 里打开 `initcall_debug` 或改 `watchdog_thresh` | demos README 把状态从 **待真机验证** 改成 MEASURED，贴整段 stdout，标 `sampled on <uname -r>`。三条 dmesg（init / work / exit）必须来自这次 token，不能手写。失败则保持 `open` 或改 `blocked`，写明缺头文件还是缺权限。章 README 的 RECIPE 句改成指向这次实测 |
+
+---
+
+### 2.16 ondisk-fs-iomap/
+
+**已有**：`demos/01-run.sh` 已进树。脚本默认 DRY-RUN，不 `truncate`、不 `mkfs`、不 `losetup`。章 README 的「实测 vs RECIPE」写明写作时没有建 loop。`12-observability.md` 的 trace 命令都是 RECIPE。demo 02–05 只有名字，没有脚本。
+
+| ID | 状态 | 补什么 | 落到哪里 | 建议动作 | 验收 |
+|----|------|--------|----------|----------|------|
+| OFS-LOOP-EXTENT | open | 在测试机上跑通 demo 01：自建 loop 镜像上的 ext4（可选 xfs），fsync 前后和 `fallocate` 的 `filefrag -v` | `ondisk-fs-iomap/demos/01-run.sh`、`ondisk-fs-iomap/demos/README.md`；`ondisk-fs-iomap/README.md`「实测 vs RECIPE」；`ondisk-fs-iomap/08-delalloc-unwritten.md` 末尾的 demo 句；`ondisk-fs-iomap/12-observability.md` §12.1 | **非生产**机，root。先不带变量跑 `01-run.sh`，确认只有 DRY-RUN。再 `sudo KN_DEMO_RUN=1 ./01-run.sh`。脚本只 `truncate` 自己的 `disk.img`，`losetup -f --show` 这个文件，挂到同一个临时目录。退出时 trap `umount`，并且只有 `/sys/block/loopN/loop/backing_file` 等于该镜像才 `losetup -d`。不要设置 `KN_DEMO_DEV`（脚本会拒绝）。不要对现有盘 `mkfs`。`filefrag -v` 不要加 `-s`。可选再跑 `KN_DEMO_FS=xfs`，没有 `mkfs.xfs` 就只做 ext4 并写明 | demos README 把 demo 01 从 **待真机验证** 改成 MEASURED，贴整段 stdout，标 `sampled on <uname -r>`。fsync 前可以没有 `delalloc`（回写可能已跑），原文照贴。fsync 后同一文件不再标 `delalloc`，并有物理区间。`fallocate` 那次的旗标列含 `unwritten`；没有就保持 `open` 或改 `blocked`，写明 `filefrag` 用词或文件系统行为。临时目录和 loop 必须已清掉。不要手写 `filefrag` 行 |
 
 ---
 

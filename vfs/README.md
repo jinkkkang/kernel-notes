@@ -89,7 +89,7 @@
 
 ## 未覆盖
 
-- ext4 / xfs / btrfs 的目录项、日志、分配组。`remap_file_range` 在 VFS 里何时被调用见 [05b](./05b-splice-and-zerocopy.md)，各文件系统怎样克隆区间不写
+- ext4 / xfs / btrfs 的目录项、日志、分配组。ext4 / XFS 的盘上结构、iomap 与日志见 [ondisk-fs-iomap/](../ondisk-fs-iomap/README.md)。`remap_file_range` 在 VFS 里何时被调用见 [05b](./05b-splice-and-zerocopy.md)，各文件系统怎样克隆区间不写
 - 套接字上的 splice / `sendpage`（`splice_to_socket` 只点名）
 - `pipe(2)` 的创建、`pipe_read` / `pipe_write` 唤醒、epoll：见 [ipc/](../ipc/README.md)。管道槽字段仍在 [05b](./05b-splice-and-zerocopy.md)
 - FUSE 请求队列、overlayfs 的 whiteout 与 copy-up（见 [containerization/](../containerization/README.md)）

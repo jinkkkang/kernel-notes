@@ -58,6 +58,7 @@
 | cgroup v2 的 `io.*` 文件由谁登记 | [cgroup/07-io-pids-misc.md](../cgroup/07-io-pids-misc.md) §7.1。本章写 bio 上的 `bi_blkg`、限流和 ioprio 策略怎么吃到请求 |
 | 完成 IRQ 进 IDT、`request_threaded_irq`、MSI 向量 | [interrupts/](../interrupts/README.md)。本章只写 NVMe / virtio 的处理函数里做了什么 |
 | `spin_lock_irqsave` 的锁字 | [locks-and-ds/05-spinlock.md](../locks-and-ds/05-spinlock.md) |
+| 文件偏移怎样答成磁盘区间（`buffer_head` / iomap），以及 ext4、XFS 的日志 | [ondisk-fs-iomap/](../ondisk-fs-iomap/README.md)。本章从 `submit_bio` 之后的 bio 往下写 |
 
 块层不认识文件名。`inode`、`dentry`、路径查找停在 VFS。tmpfs 没有 bio，见 [vfs/10](../vfs/10-tmpfs-walkthrough.md)。
 
