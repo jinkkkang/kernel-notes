@@ -54,6 +54,7 @@
 | P2 | IMW-KMOD-WQ | init-modules-wq demo 01：测试机加载 `kn_demo_wq` |
 | P2 | OFS-LOOP-EXTENT | ondisk-fs-iomap demo 01：自建 loop 上 `filefrag -v` |
 | P2 | DMA-IOMMU-INVENTORY | dma-iommu demo 01：只读盘点 group / PCI / dmesg |
+| P2 | KVM-MINIMAL-RUN | kvm-virtio demo 01：无 irqchip 的 PIO + HLT |
 | P2 | 其余各章 observability 尾巴 | 见分章。`IRQ-KVM` 已 blocked，不要领 |
 
 ---
@@ -287,6 +288,16 @@
 
 ---
 
+### 2.18 kvm-virtio/
+
+**已有**：`demos/01-minimal-kvm.c`、`Makefile`、`01-run.sh` 已进树。程序在打不开 `/dev/kvm` 时退出 77，不打印 `result=ok`。章 README 的「实测 vs RECIPE」写明写作时只验证了编译、缺设备和 `/dev/null` 的错误路径，**没有** `KVM_EXIT_IO` / `KVM_EXIT_HLT` 行。`14-observability.md` 的 `perf` 命令都是 RECIPE。demo 02–05 只有名字，没有脚本。
+
+| ID | 状态 | 补什么 | 落到哪里 | 建议动作 | 验收 |
+|----|------|--------|----------|----------|------|
+| KVM-MINIMAL-RUN | open | 在能打开 `/dev/kvm` 的测试机上跑 demo 01，贴出真实的 `KVM_EXIT_IO` 和 `KVM_EXIT_HLT` | `kvm-virtio/demos/01-minimal-kvm.c`、`kvm-virtio/demos/01-run.sh`、`kvm-virtio/demos/Makefile`、`kvm-virtio/demos/README.md`；`kvm-virtio/README.md`「实测 vs RECIPE」 | 非生产机。直接 `./01-run.sh`，不要 sudo，不要 `chmod /dev/kvm`，不要 `modprobe`，不要改 nested，不要改启动参数。脚本先自测不存在的设备路径（必须 77）和 `/dev/null`（必须是错误，不能是 0 或 77）。然后对真实 `/dev/kvm` 跑。权限不够或没有虚拟化能力时程序退出 77，保持本 ID `open`，不要编 PIO/HLT 行。能跑通时把整段 stdout 贴进 demos README，标 `sampled on <uname -r>`。若 `systemd-detect-virt` 不是 `none`，写明这是虚拟机里的 KVM，不要写成裸机。不要根据这次运行去改 v6.6.160 的行号。不要把「无 irqchip 时 HLT 回到用户态」改写成所有虚拟机的 HLT 都会 `KVM_EXIT_HLT`。`14-observability.md` 的 trace 仍是 RECIPE，除非同一次另开了事件并贴了原文 | demos README 在成功时记下 `sampled on` 和 stdout。验收看：退出码 0；有 `api_version=12`；`exit=KVM_EXIT_IO` 且 `direction=KVM_EXIT_IO_OUT(1)`、`port=1016`、`size=1`、`count=1`、`byte=0x4b`；随后有 `exit=KVM_EXIT_HLT` 和 `result=ok`；`data_offset` 落在 `vcpu_mmap_size` 里。失败或 77 则保持 `open`，写明是权限、没有 `/dev/kvm`，还是 ioctl 报错。不要为了跑通去创建 irqchip 或改客户机代码 |
+
+---
+
 ## 3. 完成后如何改仓库（统一模板）
 
 对每个 `done` 的 ID，code agent 应至少：
@@ -311,4 +322,4 @@
 - 某条永久不可做（无硬件、无对应文件）：状态 `blocked`，正文保留已有 RECIPE 并写 blocker。`IRQ-KVM` 属于「文件在，但没有可填的命令」。
 - 与大纲冲突时以各章 README「边界」为准；本清单不授权改厚薄结构。
 
-*生成说明：条目来自 2026-11-09 对 `main`（含 tracing）全库 RECIPE/demos 审计，并在落地时按当前树核对过路径与节号。`DMA-IOMMU-INVENTORY` 随 dma-iommu 选修章加入。*
+*生成说明：条目来自 2026-11-09 对 `main`（含 tracing）全库 RECIPE/demos 审计，并在落地时按当前树核对过路径与节号。`DMA-IOMMU-INVENTORY` 随 dma-iommu 选修章加入。`KVM-MINIMAL-RUN` 随 kvm-virtio 选修章加入。*

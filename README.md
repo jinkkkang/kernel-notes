@@ -28,6 +28,7 @@
 | [init-modules-wq/](./init-modules-wq/) | **内核初始化、模块与工作队列（大章）**：`start_kernel` 到 pid 1 与 initcall、`finit_module` → `load_module` → `do_init_module`、cmwq 的 pool / pwq / worker。工作队列和中断线程、softirq、`irq_work` 怎么选见 interrupts。 |
 | [ondisk-fs-iomap/](./ondisk-fs-iomap/) | **盘上文件系统与 iomap（选修）**：ext4 / XFS 的盘上结构、`buffer_head` 与 iomap 的分界、缓冲读写与回写、Direct IO、delalloc / unwritten、jbd2 与 XFS CIL、fsync。页缓存见 memory-management，bio 见 block-io。 |
 | [dma-iommu/](./dma-iommu/) | **DMA 地址、IOMMU 与 SWIOTLB（选修）**：`dma_addr_t`、direct / SWIOTLB、IOMMU domain 与页表、dma-iommu、VFIO 边界、fault 与观测。bio 见 block-io，网卡 ring 见 networking，CPU 页表见 memory-management。 |
+| [kvm-virtio/](./kvm-virtio/) | **KVM 与 virtio（选修）**：`/dev/kvm`、`KVM_RUN`、VMX 进入退出、vCPU 线程与 HLT、virtqueue、virtio-blk 请求、vhost。EPT 见 memory-management，virtio-net 见 networking，IRTE 见 interrupts。 |
 
 ### 进程管理子章节
 
@@ -349,6 +350,27 @@
 | [11-fault-and-isolation.md](./dma-iommu/11-fault-and-isolation.md) | fault 上报路径、越界、ACS |
 | [12-observability.md](./dma-iommu/12-observability.md) | tracepoint、debugfs、sysfs。RECIPE |
 | [demos/](./dma-iommu/demos/) | demo 01 只读盘点（**待真机验证**）。02–05 只有计划 |
+
+### KVM 与 virtio 子章节
+
+| 文件 | 内容 |
+|------|------|
+| [README.md](./kvm-virtio/README.md) | 章节目录、阅读顺序、与内存 / 中断 / 网络 / 块层的边界 |
+| [01-overview.md](./kvm-virtio/01-overview.md) | QEMU、KVM、客户机驱动、virtio、vhost 的职责 |
+| [02-userspace-api.md](./kvm-virtio/02-userspace-api.md) | `/dev/kvm`、VM fd、vCPU fd、memslot、`kvm_run` |
+| [03-kvm-run.md](./kvm-virtio/03-kvm-run.md) | `KVM_RUN` 到 x86 `vcpu_run` |
+| [04-vm-entry-exit.md](./kvm-virtio/04-vm-entry-exit.md) | VMX 进入与退出；SVM 只点差异 |
+| [05-vcpu-schedule.md](./kvm-virtio/05-vcpu-schedule.md) | HLT、halt poll、阻塞与 steal |
+| [06-guest-memory.md](./kvm-virtio/06-guest-memory.md) | GVA/GPA/HVA/HPA 接到取指和 PIO |
+| [07-irq-clock.md](./kvm-virtio/07-irq-clock.md) | irqfd、APICv/posted interrupt 的条件、pvclock |
+| [08-pio-mmio-notify.md](./kvm-virtio/08-pio-mmio-notify.md) | 内核处理与用户态退出、ioeventfd、irqfd |
+| [09-virtio-negotiate.md](./kvm-virtio/09-virtio-negotiate.md) | feature 与 status；modern virtio-pci |
+| [10-virtqueue.md](./kvm-virtio/10-virtqueue.md) | split / packed、屏障、kick |
+| [11-virtio-blk.md](./kvm-virtio/11-virtio-blk.md) | 客户机 blk-mq 到 virtqueue，再到后端边界 |
+| [12-vhost.md](./kvm-virtio/12-vhost.md) | 内核 vhost 队列、worker、split 描述符 |
+| [13-reset-migration.md](./kvm-virtio/13-reset-migration.md) | reset、在途请求、dirty log |
+| [14-observability.md](./kvm-virtio/14-observability.md) | exit、调度、通知分层。RECIPE |
+| [demos/](./kvm-virtio/demos/) | demo 01 可编译（**KVM_RUN 成功路径待真机验证**）。02–05 只有计划 |
 
 ## 约定
 
