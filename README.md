@@ -27,6 +27,7 @@
 | [containerization/](./containerization/) | **容器化（大章）**：八种命名空间与 `nsproxy`、`pivot_root`、user ns 映射、net ns（veth/bridge 细节见 networking）、容器里的 cgroup、overlayfs、FUSE、runc v1.5.2 创建路径、seccomp/能力/LSM 边界、观测与坑。PID 分配见 process-management，控制器见 cgroup，挂载传播见 vfs。 |
 | [init-modules-wq/](./init-modules-wq/) | **内核初始化、模块与工作队列（大章）**：`start_kernel` 到 pid 1 与 initcall、`finit_module` → `load_module` → `do_init_module`、cmwq 的 pool / pwq / worker。工作队列和中断线程、softirq、`irq_work` 怎么选见 interrupts。 |
 | [ondisk-fs-iomap/](./ondisk-fs-iomap/) | **盘上文件系统与 iomap（选修）**：ext4 / XFS 的盘上结构、`buffer_head` 与 iomap 的分界、缓冲读写与回写、Direct IO、delalloc / unwritten、jbd2 与 XFS CIL、fsync。页缓存见 memory-management，bio 见 block-io。 |
+| [dma-iommu/](./dma-iommu/) | **DMA 地址、IOMMU 与 SWIOTLB（选修）**：`dma_addr_t`、direct / SWIOTLB、IOMMU domain 与页表、dma-iommu、VFIO 边界、fault 与观测。bio 见 block-io，网卡 ring 见 networking，CPU 页表见 memory-management。 |
 
 ### 进程管理子章节
 
@@ -329,6 +330,25 @@
 | [11-fsync-crash.md](./ondisk-fs-iomap/11-fsync-crash.md) | `vfs_fsync_range` → `->fsync`、flush/FUA、rename 边界 |
 | [12-observability.md](./ondisk-fs-iomap/12-observability.md) | tracepoint、`filefrag`、回写 / 日志 / fsync 的配方。RECIPE |
 | [demos/](./ondisk-fs-iomap/demos/) | demo 01 默认 DRY-RUN，自建 loop 上看 extent（**待真机验证**） |
+
+### DMA 地址、IOMMU 与 SWIOTLB 子章节
+
+| 文件 | 内容 |
+|------|------|
+| [README.md](./dma-iommu/README.md) | 章节目录、阅读顺序、与块层 / 网络 / 内存 / 中断的边界 |
+| [01-overview.md](./dma-iommu/01-overview.md) | VA、PA、DMA 地址；direct、bounce、IOMMU 怎样组合 |
+| [02-dma-address.md](./dma-iommu/02-dma-address.md) | coherent 与 streaming、所有权、屏障、`dma_map_sg` 的返回值 |
+| [03-dma-api-dispatch.md](./dma-iommu/03-dma-api-dispatch.md) | `dma_map_ops`、`dma_go_direct`、两套 mask |
+| [04-direct-dma.md](./dma-iommu/04-direct-dma.md) | `phys_to_dma` 与 bounce 条件 |
+| [05-swiotlb.md](./dma-iommu/05-swiotlb.md) | 池、slot、拷贝、池耗尽 |
+| [06-sg-and-iova.md](./dma-iommu/06-sg-and-iova.md) | `orig_nents` 与 mapped nents；IOVA 与 bio 的接缝 |
+| [07-iommu-core.md](./dma-iommu/07-iommu-core.md) | domain、group、ACS、IOVA 分配器 |
+| [08-page-tables.md](./dma-iommu/08-page-tables.md) | `iommu_map`、VT-d PTE 与 IOTLB、SMMU 差异 |
+| [09-dma-iommu.md](./dma-iommu/09-dma-iommu.md) | `iommu_dma_ops`、identity / DMA / DMA-FQ |
+| [10-vfio-boundary.md](./dma-iommu/10-vfio-boundary.md) | VFIO type1 与 iommufd 的映射留在内核 |
+| [11-fault-and-isolation.md](./dma-iommu/11-fault-and-isolation.md) | fault 上报路径、越界、ACS |
+| [12-observability.md](./dma-iommu/12-observability.md) | tracepoint、debugfs、sysfs。RECIPE |
+| [demos/](./dma-iommu/demos/) | demo 01 只读盘点（**待真机验证**）。02–05 只有计划 |
 
 ## 约定
 
