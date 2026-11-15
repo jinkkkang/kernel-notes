@@ -53,6 +53,7 @@
 | P2 | MM-KMEMLEAK | kmemleak；未编 `CONFIG_DEBUG_KMEMLEAK` 则 blocked |
 | P2 | IMW-KMOD-WQ | init-modules-wq demo 01：测试机加载 `kn_demo_wq` |
 | P2 | OFS-LOOP-EXTENT | ondisk-fs-iomap demo 01：自建 loop 上 `filefrag -v` |
+| P2 | DMA-IOMMU-INVENTORY | dma-iommu demo 01：只读盘点 group / PCI / dmesg |
 | P2 | 其余各章 observability 尾巴 | 见分章。`IRQ-KVM` 已 blocked，不要领 |
 
 ---
@@ -276,6 +277,16 @@
 
 ---
 
+### 2.17 dma-iommu/
+
+**已有**：`demos/01-run.sh` 已进树。脚本只读，没有危险开关，不 `sudo`、不写 sysfs、不加载模块。章 README 的「实测 vs RECIPE」写明写作时只在虚拟机上确认脚本能跑，**不能**把那次 `uname` 当成硬件 DMA 验证，stdout 也不贴进正文。`12-observability.md` 的 trace / debugfs 命令都是 RECIPE。demo 02–05 只有名字，没有脚本。
+
+| ID | 状态 | 补什么 | 落到哪里 | 建议动作 | 验收 |
+|----|------|--------|----------|----------|------|
+| DMA-IOMMU-INVENTORY | open | 在测试机上跑 demo 01，把只读盘点贴回去，并写明这不是硬件 DMA 验证 | `dma-iommu/demos/01-run.sh`、`dma-iommu/demos/README.md`；`dma-iommu/README.md`「实测 vs RECIPE」；`dma-iommu/12-observability.md` §12.6 | 非生产机。直接 `./01-run.sh`，不要 sudo。把整段 stdout 贴进 demos README，标 `sampled on <uname -r>`。缺路径必须仍是 `SKIP:`，空目录或没有匹配的 dmesg 行必须仍是 `UNKNOWN:`。不要根据 group 存在改写正文去断言 `dma_map_ops`、当前域或 ACS 隔离。不要读 `/sys/class/dma` 来补结论。不要写 group 的 `type`，不要 `modprobe`，不要解绑设备，不要改启动参数。虚拟机上的一次成功跑可以贴，但状态保持「只读盘点」，不要改成硬件 DMA 已验证。`12-observability.md` 的 trace / debugfs 仍是 RECIPE，除非同一次另开了事件并贴了原文 | demos README 可以记下这次只读盘点的 `sampled on` 和 stdout 摘录。验收看：退出码 0；有局限说明；PCI 的 `driver` / `iommu_group` 是 `readlink` 原文或 `NONE`/`SKIP`/`UNKNOWN`；没有「因此使用 direct」或「隔离充分」。若把本章从「没有硬件 DMA 实测」改成实测，必须另有证据（例如打开的 `iommu:map` / `swiotlb:swiotlb_bounced` 原文），并且仍与 v6.6.160 行号分开。跑不了就保持 `open`，写明缺 sysfs 还是缺 dmesg 权限 |
+
+---
+
 ## 3. 完成后如何改仓库（统一模板）
 
 对每个 `done` 的 ID，code agent 应至少：
@@ -300,4 +311,4 @@
 - 某条永久不可做（无硬件、无对应文件）：状态 `blocked`，正文保留已有 RECIPE 并写 blocker。`IRQ-KVM` 属于「文件在，但没有可填的命令」。
 - 与大纲冲突时以各章 README「边界」为准；本清单不授权改厚薄结构。
 
-*生成说明：条目来自 2026-11-09 对 `main`（含 tracing）全库 RECIPE/demos 审计，并在落地时按当前树核对过路径与节号。*
+*生成说明：条目来自 2026-11-09 对 `main`（含 tracing）全库 RECIPE/demos 审计，并在落地时按当前树核对过路径与节号。`DMA-IOMMU-INVENTORY` 随 dma-iommu 选修章加入。*
