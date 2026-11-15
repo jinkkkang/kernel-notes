@@ -1,18 +1,18 @@
 # 13. reset、在途请求与 dirty log
 
-**结论**：客户机拆设备时，`virtio_reset_device` 保证正在跑的队列回调已经停下，然后传输层 `reset`。调用者还得保证没有别的上下文正在 `virtqueue_notify`。已经放进环、后端还没写 used 的请求是在途请求：reset 之后后端再写 used ring，客户机已经不认这笔 `data` 指针。迁移时内核负责的是 memslot 的 dirty bitmap（或 dirty ring），不是 QEMU 怎样把设备状态写进迁移流。
+**结论**：客户机拆设备时要先停掉还在跑的队列回调，再让传输层 `reset`。`virtio_reset_device` 只在 `CONFIG_VIRTIO_HARDEN_NOTIFICATION` 下做这件事；没开这个选项时它只调用 `config->reset`。调用者还得保证没有别的上下文正在 `virtqueue_notify`。已经放进环、后端还没写 used 的请求是在途请求：reset 之后后端再写 used ring，客户机已经不认这笔 `data` 指针。迁移时内核负责的是 memslot 的 dirty bitmap（或 dirty ring），不是 QEMU 怎样把设备状态写进迁移流。
 
 ---
 
 ## 13.1 设备 reset 与队列
 
-`virtio_reset_device`（`drivers/virtio/virtio.c:220`）的注释写了三件事：阻止设备再发中断和再访问内存；调用时不能有正在进行的 `virtqueue_notify` / `virtqueue_kick`；函数保证队列回调不在进行，但系统调用、工作队列和下半部要调用者自己停。`CONFIG_VIRTIO_HARDEN_NOTIFICATION` 下它先 `virtio_break_device` 再 `virtio_synchronize_cbs`，然后 `dev->config->reset`。没有这个选项时直接 reset。broken 标志让随后的 `virtqueue_notify` 返回假（`virtio_ring.c:2377`）。
+`virtio_reset_device`（`drivers/virtio/virtio.c:220`）的注释写：阻止设备再发中断和再访问内存；调用时不能有正在进行的 `virtqueue_notify` / `virtqueue_kick`；并说函数保证队列回调不在进行。函数体只在 `CONFIG_VIRTIO_HARDEN_NOTIFICATION` 下先 `virtio_break_device`（`:229`）再 `virtio_synchronize_cbs`（`:230`），然后无条件 `dev->config->reset`（`:233`）。没编这个选项时，回调同步不发生，注释里的保证没有对应代码。系统调用、工作队列和下半部无论哪种配置都要调用者自己停。broken 标志让随后的 `virtqueue_notify` 返回假（`virtio_ring.c:2377`），但那也只在上面的 `virtio_break_device` 真的被调用之后。
 
 virtio-blk 的拆除顺序在 `virtblk_remove`（`drivers/block/virtio_blk.c:1597`）：`flush_work` 停掉配置空间工作项，`del_gendisk`，释放 tag set，然后在 `vdev_mutex` 里 `virtio_reset_device`，把 `vblk->vdev` 置 NULL，再 `del_vqs`。注释写明队列停了之后不再有人使用 `vblk->vdev`。
 
 休眠路径 `virtblk_freeze`（`:1624`，`CONFIG_PM_SLEEP`）先 `blk_mq_freeze_queue` 和 `blk_mq_quiesce_queue_nowait`，注释要求删队列之前 virtqueue 里不再有请求，然后才 `virtio_reset_device` 和 `del_vqs`。`virtblk_restore` 再把队列建回来。
 
-单条队列的 `virtqueue_reset`（`virtio_ring.c:2848`）要求调用时没有并发的其他队列操作。它 `virtqueue_disable_and_recycle`，对每个还没取走的缓冲调用 `recycle`，再按 packed 或 split `reinit`，最后 `virtqueue_enable_after_reset`。失败时 `-EBUSY` 表示没能和设备同步，注释写明队列可能已经不能用。`-ENOENT` 表示传输或设备不支持。`VIRTIO_F_RING_RESET`（`virtio_config.h:111`，bit 40）是这条按队列重置的 feature。vhost-net 的 feature 掩码包含这一位（`drivers/vhost/net.c:73`），vhost 共用的 `VHOST_FEATURES` 不包含它。
+单条队列的 `virtqueue_reset`（`virtio_ring.c:2848`）的注释要求调用时没有并发的其他队列操作。它自己不 `synchronize` 回调。`virtqueue_disable_and_recycle`（`:2170`）先 `config->disable_vq_and_reset`，再对 `virtqueue_detach_unused_buf` 取出的每个缓冲调用 `recycle`。传输层的 disable 若不等待正在跑的 `callback`，`recycle` 和 `virtqueue_get_buf` 会碰到同一块 `data`。失败时 `virtqueue_enable_after_reset` 返回 `-EBUSY`（`:2203`），注释写明队列可能已经不能用。没有 `disable_vq_and_reset` 时返回 `-ENOENT`（`:2182`）。`VIRTIO_F_RING_RESET`（`include/uapi/linux/virtio_config.h:111`，bit 40）是这条按队列重置的 feature。vhost-net 的 feature 掩码包含这一位（`drivers/vhost/net.c:73`），vhost 共用的 `VHOST_FEATURES` 不包含它。
 
 ---
 
@@ -21,7 +21,7 @@ virtio-blk 的拆除顺序在 `virtblk_remove`（`drivers/block/virtio_blk.c:159
 一笔 virtio-blk 请求在 `virtqueue_add_sgs` 成功之后、`virtqueue_get_buf` 把它交回之前，描述符在环上，`desc_state[].data` 仍指向 `virtblk_req`。后端可能已经在读数据页。reset 若发生在这中间：
 
 - 客户机侧 `recycle` 或 `del_vqs` 会释放或回收这块 PDU。后端若还把状态字节写进那块客户机内存，写的是 GPA，页可能还在；但客户机不再把这块内存当 in 头。
-- 后端若在 reset 之后 `vhost_add_used` 或用户态写 used ring，客户机的回调已经被 synchronize 掉，或者队列已 broken，这次 used 更新没有驱动来取。
+- 后端若在 reset 之后 `vhost_add_used` 或用户态写 used ring：开了 `CONFIG_VIRTIO_HARDEN_NOTIFICATION` 时回调已经被 `virtio_synchronize_cbs` 等完；没开时回调可能还在 `virtqueue_get_buf` 里。两种情况下驱动都不再把这块内存当作一笔活的请求。
 - kick eventfd 和 call eventfd 如果还挂在旧队列上，复位之后的第一次通知会打进已经拆掉的队列。vhost 的 `VHOST_SET_VRING_KICK` 用 `VHOST_FILE_UNBIND`（`include/uapi/linux/vhost.h:18`，值 -1）解开 fd。用户态后端要在设备 reset 的同一临界区里解开 ioeventfd / irqfd。
 
 内核没有一个「取消在途 virtio-blk」的通用 ioctl。客户机能做的是冻住 blk-mq、reset、再保证后端不再碰旧环。后端协议上的取消属于用户态设备实现，本章不写 QEMU 的请求引用计数。

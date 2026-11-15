@@ -68,7 +68,7 @@ struct pvclock_vcpu_time_info {
 } __attribute__((__packed__));
 ```
 
-`vcpu_enter_guest` 处理 `KVM_REQ_CLOCK_UPDATE` 时调用 `kvm_guest_time_update`（`x86.c:10629`，函数在 `:3169`）。它把换算系数写进客户机那一页。客户机用 TSC 和这组系数自己算时间，避免每次读时钟都 VM-exit。`PVCLOCK_GUEST_STOPPED` 用来告诉客户机时间曾经停过（例如宿主机挂起），不是 steal 的累加器。
+`vcpu_enter_guest` 处理 `KVM_REQ_CLOCK_UPDATE` 时调用 `kvm_guest_time_update`（`x86.c:10629`，函数在 `:3169`）。它先填 `vcpu->hv_clock`，再由 `kvm_setup_guest_pvclock`（`:3120`）写进客户机那一页：先把 `version` 变成奇数（`:3147` 的 `| 1`），写完字段后加一变成偶数（`:3161`）。客户机用 TSC 和这组系数自己算时间，避免每次读时钟都 VM-exit。`PVCLOCK_GUEST_STOPPED` 用来告诉客户机时间曾经停过（例如宿主机挂起），不是 steal 的累加器。
 
 steal 的结构和更新点在 [05](./05-vcpu-schedule.md)：`MSR_KVM_STEAL_TIME`，`record_steal_time` 加的是宿主机线程的 `sched_info.run_delay` 增量。时钟请求和 steal 请求都在 `IN_GUEST_MODE` 之前处理。它们写的是客户机 GPA 后面的 HVA，写完可以再进入客户机，不一定让 `KVM_RUN` 返回。
 

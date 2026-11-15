@@ -31,7 +31,9 @@
 | `KVM_CREATE_VCPU` | id 0 |
 | `KVM_GET_VCPU_MMAP_SIZE` + `mmap` | 映射 `struct kvm_run` 和后面的 PIO 页。长度用 ioctl 的返回值，不用 `sizeof` |
 | `KVM_GET_SREGS` / `KVM_SET_SREGS` | CS selector 和 base 改成 0，清 CR0.PE 与 CR0.PG |
-| `KVM_SET_REGS` | RIP 0，RDX = `0x3f8`，RAX = `'K'`，RFLAGS = 2 |
+| `KVM_SET_REGS` | RIP 0，RDX = `0x3f8`，RAX = `'K'`，RFLAGS = 2。CS/DS/ES/FS/GS/SS 的 base 和 selector 都是 0，limit 是 `0xffff`，这样 `base == selector << 4` |
+| `KVM_CHECK_EXTENSION(KVM_CAP_IMMEDIATE_EXIT)` | 非 0 才允许闹钟处理函数写 `immediate_exit`。这个字节只在下一次进入 ioctl 时被读 |
+| `KVM_SET_SIGNAL_MASK` | `len` 必须是 8（内核 `sigset_t`）。掩码为空，表示 `KVM_RUN` 期间不挡住 `SIGALRM`。ioctl 之外用 `sigprocmask` 挡住它，避免单次闹钟在进入 ioctl 之前被吃掉 |
 | `KVM_RUN` | 第一次应是 `KVM_EXIT_IO`。读 PIO 页并不退休指令 |
 | 再一次 `KVM_RUN` | `complete_fast_pio_out` 跳过 `OUT`，接着执行 `HLT`。没有内核 LAPIC 时退出原因是 `KVM_EXIT_HLT` |
 
@@ -50,7 +52,7 @@
 | 编译目标不是 `__x86_64__` | 77 | `SKIP: not x86_64` |
 | `ENOENT` | 77 | `SKIP: no-device` |
 | `EACCES` / `EPERM` | 77 | `SKIP: permission` |
-| `ENODEV` / `ENXIO` / `EOPNOTSUPP`，或 `KVM_CAP_USER_MEMORY` 为 0 | 77 | `SKIP: no-virtualization` |
+| 打开时 `ENODEV` / `ENXIO`，或 `KVM_CREATE_VM` 返回 `ENODEV` / `ENXIO` / `EBUSY`，或 `KVM_CAP_USER_MEMORY` 为 0 | 77 | `SKIP: no-virtualization`。`EBUSY` 是 v6.6.160 `hardware_enable_all` 在 VMX 启用失败时的返回值。`EOPNOTSUPP` 和 `EINVAL` 仍是错误 |
 | 打开成功但 ioctl 不是 KVM（例如 `/dev/null`） | 1 | `ERROR:`，没有 `result=ok` |
 | API 版本不是 12、映射失败、退出字段越界、截止时间到 | 1 | `ERROR:` |
 
@@ -62,11 +64,16 @@
 
 ```text
 cc -std=c11 -Wall -Wextra -Werror -O2 -o 01-minimal-kvm 01-minimal-kvm.c
+==== self-test: pending SIGALRM ====
+---- command: timeout --foreground 3 env KN_KVM_TEST_SIGNAL=1 ./01-minimal-kvm ----
+exit=0
+-- stdout --
+signal_test=pending-delivered
 ==== self-test: missing device ====
----- command: env KN_KVM_DEVICE=/tmp/tmp.FY7GdP1cbP/no-such-kvm ./01-minimal-kvm ----
+---- command: env KN_KVM_DEVICE=/tmp/tmp.TGD7je9FFh/no-such-kvm ./01-minimal-kvm ----
 exit=77
 -- stderr --
-SKIP: no-device /tmp/tmp.FY7GdP1cbP/no-such-kvm: No such file or directory
+SKIP: no-device /tmp/tmp.TGD7je9FFh/no-such-kvm: No such file or directory
 ==== self-test: /dev/null is not KVM ====
 ---- command: env KN_KVM_DEVICE=/dev/null ./01-minimal-kvm ----
 exit=1
@@ -82,6 +89,8 @@ SKIP: permission /dev/kvm: Permission denied
 real_exit=77
 KVM_RUN was not executed. Success path remains 待真机验证.
 ```
+
+`KN_KVM_TEST_SIGNAL=1` 不打开 `/dev/kvm`。它在 `SIGALRM` 被挡住时让单次闹钟到期，再 `sigsuspend` 把这只信号放开，确认处理函数这时才跑。这不是 `KVM_RUN` 成功。
 
 这次退出码是 77。它证明 SKIP 和「不是 KVM 的 fd」两条路径按上面的表工作，不证明客户机指令在这台机器上执行过。运行内核是 6.12，不能用来核对 v6.6.160 的行号。
 
@@ -104,8 +113,8 @@ KVM_RUN was not executed. Success path remains 待真机验证.
 
 在测试机上执行 `./01-run.sh`。不要 `sudo`，不要 `chmod /dev/kvm`，不要 `modprobe`，不要打开 nested。
 
-1. 编译命令带 `-Wall -Wextra`。警告当失败。
-2. 缺设备的自测退出 77，stderr 含 `SKIP: no-device`，stdout 没有 `result=ok`。
+1. 编译命令带 `-Wall -Wextra -Werror`。
+2. `KN_KVM_TEST_SIGNAL=1` 退出 0，stdout 是 `signal_test=pending-delivered`，没有 `result=ok`。缺设备的自测退出 77，stderr 含 `SKIP: no-device`，stdout 没有 `result=ok`。
 3. `KN_KVM_DEVICE=/dev/null` 退出码不是 0 也不是 77，stderr 含 `ERROR:`。
 4. 真实 `/dev/kvm` 打不开时退出 77，正文保持 **待真机验证**，不补一句假的 IO/HLT。
 5. 真实运行退出 0 时，把整段 stdout 贴进本文件，标 `sampled on <uname -r>`。必须同时有 `KVM_EXIT_IO` 和 `KVM_EXIT_HLT`，`direction` 为 OUT，`port` 为 1016，`size` 为 1，`byte` 为 `0x4b`。写明这是不是嵌套。不要把这次 `uname` 写进 v6.6.160 的行号旁。

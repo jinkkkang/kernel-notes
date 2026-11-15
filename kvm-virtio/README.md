@@ -85,7 +85,7 @@ QEMU 的迁移状态机、qcow2、客户机固件、嵌套 VMCS 的字段逐项�
 
 ## 实测 vs RECIPE
 
-- **实测**：demo 01 在写作环境编译通过（`gcc -std=c11 -Wall -Wextra -Werror`）。同一环境跑了 [demos/01-run.sh](./demos/01-run.sh)：缺文件的设备路径退出 77，`/dev/null` 退出 1，真实 `/dev/kvm` 因权限退出 77。`runner_virt=kvm`，`uname -r` 是 `6.12.113+`。没有 `KVM_EXIT_IO` 或 `KVM_EXIT_HLT` 行。这次采样不能当作 v6.6.160 的行号依据，也不能当作 nested 上跑通了客户机指令。
+- **实测**：demo 01 在写作环境编译通过（`gcc -std=c11 -Wall -Wextra -Werror`）。同一环境跑了 [demos/01-run.sh](./demos/01-run.sh)：`KN_KVM_TEST_SIGNAL=1` 退出 0（不打开 `/dev/kvm`），缺文件的设备路径退出 77，`/dev/null` 退出 1，真实 `/dev/kvm` 因权限退出 77。`runner_virt=kvm`，`uname -r` 是 `6.12.113+`。没有 `KVM_EXIT_IO` 或 `KVM_EXIT_HLT` 行。这次采样不能当作 v6.6.160 的行号依据，也不能当作 nested 上跑通了客户机指令。
 - **RECIPE / 待真机验证**：`KVM_RUN` 打出 IO 再打出 HLT 的验收在 [demos/README.md](./demos/README.md)。backlog ID 是 `KVM-MINIMAL-RUN`。[14](./14-observability.md) 的 `perf` / trace 命令同样是 RECIPE。demo 02–05 不实现。
 
 ## 未覆盖

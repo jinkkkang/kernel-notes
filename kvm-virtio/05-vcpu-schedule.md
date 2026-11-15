@@ -82,7 +82,7 @@ poll 窗口里线程不睡眠：循环调用 `kvm_vcpu_check_block`（`:3455`）
 
 `kvm_vcpu_wake_up`（`:3631`）在 `__kvm_vcpu_wake_up` 成功时把 `vcpu->ready` 设为真，并增加 `halt_wakeup`。`kvm_vcpu_kick`（`:3647`）先试唤醒；线程若已经在客户机里（`IN_GUEST_MODE`），把 mode 改成 `EXITING_GUEST_MODE` 或向所在 CPU 发 IPI，让它退出客户机后再看请求。kick 的是宿主机线程，客户机里的 idle 任务不会因此变成一条宿主机任务。
 
-`kvm_vcpu_check_block` 看到 `signal_pending(current)` 就打破睡眠。用户态因此能用信号把堵在 HLT 里的 `KVM_RUN` 拉回来，退出原因仍按 [03](./03-kvm-run.md) 的 `KVM_EXIT_INTR` / `-EINTR` 处理。demo 用 `SIGALRM` 做截止时间：即使某次运行意外停在内核 block 里，ioctl 也会被打断，程序打印错误而不是一直挂着。
+`kvm_vcpu_check_block` 看到 `signal_pending(current)` 就打破睡眠。用户态因此能用信号把堵在 HLT 里的 `KVM_RUN` 拉回来。`xfer_to_guest_mode_work` 在信号未屏蔽时写 `KVM_EXIT_INTR` 并返回 `-EINTR`（[03](./03-kvm-run.md)）。单次 `SIGALRM` 若在进入 `ioctl` 之前就被处理掉，这次 `KVM_RUN` 不会再看见它。demo 在 `KVM_RUN` 之外用 `sigprocmask` 挡住 `SIGALRM`，再把 8 字节的空 `kvm_signal_mask` 交给 `KVM_SET_SIGNAL_MASK`。`kvm_sigset_activate`（`virt/kvm/kvm_main.c:3394`）在 ioctl 里换上这张空掩码，到期的闹钟保持 pending，到这时才投递。`KVM_CAP_IMMEDIATE_EXIT` 非 0 时，处理函数还把 `kvm_run->immediate_exit` 置 1；这个字节只在下一次进入 `kvm_vcpu_ioctl` 时被读（`:4163`），不能单独打断已经睡在 `schedule` 里的那一次。
 
 ---
 

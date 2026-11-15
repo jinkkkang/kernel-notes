@@ -139,7 +139,7 @@ x86 把 `data_offset` 设成 `KVM_PIO_PAGE_OFFSET * PAGE_SIZE`（`x86.c:7962`）
 
 ## 2.5 和 demo 的对应
 
-[demos/01-minimal-kvm.c](./demos/01-minimal-kvm.c) 按这一节的顺序调用：打开设备、核对版本 12、确认 `KVM_CAP_USER_MEMORY` 非 0、`KVM_CREATE_VM`、`KVM_SET_TSS_ADDR`、匿名页、`KVM_SET_USER_MEMORY_REGION`、`KVM_CREATE_VCPU`、按 `KVM_GET_VCPU_MMAP_SIZE` 映射、`KVM_GET_SREGS` / `KVM_SET_SREGS`、`KVM_SET_REGS`。它不调用 `KVM_CREATE_IRQCHIP`。这个省略对 HLT 的含义在 [05](./05-vcpu-schedule.md)。
+[demos/01-minimal-kvm.c](./demos/01-minimal-kvm.c) 按这一节的顺序调用：打开设备、核对版本 12、确认 `KVM_CAP_USER_MEMORY` 非 0、`KVM_CREATE_VM`、`KVM_SET_TSS_ADDR`、按页对齐的匿名页、`KVM_SET_USER_MEMORY_REGION`、`KVM_CREATE_VCPU`、按 `KVM_GET_VCPU_MMAP_SIZE` 映射（至少两页，才能盖住 PIO 页）、`KVM_GET_SREGS` / `KVM_SET_SREGS`（CS/DS/ES/FS/GS/SS 的 base 与 selector 都是 0，limit 为 `0xffff`）、`KVM_SET_REGS`。进入 `KVM_RUN` 前它挡住 `SIGALRM`，并用 8 字节空掩码调用 `KVM_SET_SIGNAL_MASK`；`KVM_CAP_IMMEDIATE_EXIT` 非 0 时，闹钟处理函数才写 `immediate_exit`。它不调用 `KVM_CREATE_IRQCHIP`。这个省略对 HLT 的含义在 [05](./05-vcpu-schedule.md)。
 
 *笔记生成对照源码：Linux v6.6.160。内核树不放进本仓库。*
 

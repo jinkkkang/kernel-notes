@@ -57,11 +57,25 @@ static const unsigned char guest_code[] = {0xee, 0xf4};
 static const unsigned char guest_byte = 'K';
 
 static volatile sig_atomic_t stop_requested;
+static volatile sig_atomic_t immediate_exit_ok;
+static struct kvm_run *run_for_signal;
+static sigset_t saved_sigmask;
+static int sigmask_saved;
 
 static void on_signal(int sig)
 {
 	(void)sig;
 	stop_requested = 1;
+	/*
+	 * immediate_exit is a single byte the kernel reads with READ_ONCE at
+	 * the start of KVM_RUN (kvm_main.c). Only write it after
+	 * KVM_CAP_IMMEDIATE_EXIT has been observed. A signal that arrives
+	 * while the ioctl is already inside the guest is delivered because
+	 * the KVM_RUN mask unblocks SIGALRM; this store only helps the next
+	 * entry if the current ioctl returns and we would otherwise retry.
+	 */
+	if (immediate_exit_ok && run_for_signal)
+		run_for_signal->immediate_exit = 1;
 }
 
 static void explain_errno(const char *what)
@@ -77,7 +91,7 @@ static int skip_open(const char *path, int err)
 		kind = "no-device";
 	else if (err == EACCES || err == EPERM)
 		kind = "permission";
-	else if (err == ENODEV || err == ENXIO || err == EOPNOTSUPP)
+	else if (err == ENODEV || err == ENXIO)
 		kind = "no-virtualization";
 	else
 		return 0;
@@ -134,29 +148,124 @@ static const char *exit_name(uint32_t reason)
 	}
 }
 
-static int arm_signals(void)
+static int install_handlers(void)
 {
 	struct sigaction sa;
-	struct itimerval it;
 
 	memset(&sa, 0, sizeof(sa));
 	sa.sa_handler = on_signal;
 	sigemptyset(&sa.sa_mask);
+	/* No SA_RESTART: KVM_RUN must return EINTR instead of restarting. */
 	if (sigaction(SIGALRM, &sa, NULL) != 0 ||
 	    sigaction(SIGINT, &sa, NULL) != 0 ||
 	    sigaction(SIGTERM, &sa, NULL) != 0) {
 		explain_errno("sigaction");
 		return -1;
 	}
+	return 0;
+}
+
+/*
+ * Block SIGALRM/SIGINT/SIGTERM outside KVM_RUN, and install an empty
+ * kernel sigset (8 bytes, not glibc's 128-byte sigset_t) as the mask
+ * used during KVM_RUN. kvm_sigset_activate() swaps that mask in, so a
+ * timer that expires in the window before ioctl stays pending and is
+ * delivered inside the ioctl instead of being consumed early.
+ * The kernel rejects any len other than sizeof(its sigset_t)
+ * (virt/kvm/kvm_main.c, KVM_SET_SIGNAL_MASK).
+ */
+static int arm_kvm_run_signals(int vcpu_fd)
+{
+	struct {
+		__u32 len;
+		__u8 sigset[8];
+	} arg;
+	sigset_t block;
+	struct itimerval it;
+
+	sigemptyset(&block);
+	sigaddset(&block, SIGALRM);
+	sigaddset(&block, SIGINT);
+	sigaddset(&block, SIGTERM);
+	if (sigprocmask(SIG_BLOCK, &block, &saved_sigmask) != 0) {
+		explain_errno("sigprocmask");
+		return -1;
+	}
+	sigmask_saved = 1;
+
+	memset(&arg, 0, sizeof(arg));
+	arg.len = sizeof(arg.sigset);
+	if (xioctl(vcpu_fd, KVM_SET_SIGNAL_MASK, (unsigned long)&arg) < 0) {
+		explain_errno("KVM_SET_SIGNAL_MASK");
+		return -1;
+	}
 
 	memset(&it, 0, sizeof(it));
 	it.it_value.tv_sec = DEADLINE_MS / 1000;
 	it.it_value.tv_usec = (DEADLINE_MS % 1000) * 1000;
+	/* One-shot. A repeat is unnecessary: the signal stays pending
+	 * while blocked and is delivered when KVM_RUN installs the mask.
+	 */
 	if (setitimer(ITIMER_REAL, &it, NULL) != 0) {
 		explain_errno("setitimer");
 		return -1;
 	}
 	return 0;
+}
+
+/* Prove the pending-signal handoff without opening /dev/kvm. */
+static int test_pending_signal(void)
+{
+	sigset_t block, waitmask;
+	struct itimerval it;
+	struct timespec start, now;
+
+	if (install_handlers() != 0)
+		return EXIT_ERR;
+	sigemptyset(&block);
+	sigaddset(&block, SIGALRM);
+	if (sigprocmask(SIG_BLOCK, &block, &saved_sigmask) != 0) {
+		explain_errno("sigprocmask");
+		return EXIT_ERR;
+	}
+	sigmask_saved = 1;
+
+	memset(&it, 0, sizeof(it));
+	it.it_value.tv_usec = 20 * 1000;
+	it.it_interval.tv_usec = 100 * 1000;
+	if (setitimer(ITIMER_REAL, &it, NULL) != 0) {
+		explain_errno("setitimer");
+		return EXIT_ERR;
+	}
+	if (clock_gettime(CLOCK_MONOTONIC, &start) != 0) {
+		explain_errno("clock_gettime");
+		return EXIT_ERR;
+	}
+	do {
+		struct timespec step = { .tv_nsec = 20 * 1000 * 1000 };
+
+		nanosleep(&step, NULL);
+		if (clock_gettime(CLOCK_MONOTONIC, &now) != 0)
+			return EXIT_ERR;
+	} while ((now.tv_sec - start.tv_sec) * 1000L +
+		 (now.tv_nsec - start.tv_nsec) / 1000000L < 80);
+	if (stop_requested) {
+		fprintf(stderr, "ERROR: SIGALRM handler ran while the signal was blocked\n");
+		return EXIT_ERR;
+	}
+
+	sigfillset(&waitmask);
+	sigdelset(&waitmask, SIGALRM);
+	if (sigsuspend(&waitmask) != -1 || errno != EINTR) {
+		fprintf(stderr, "ERROR: sigsuspend did not stop for the pending SIGALRM\n");
+		return EXIT_ERR;
+	}
+	if (!stop_requested) {
+		fprintf(stderr, "ERROR: pending SIGALRM was not delivered when unblocked\n");
+		return EXIT_ERR;
+	}
+	printf("signal_test=pending-delivered\n");
+	return EXIT_OK;
 }
 
 static void disarm_timer(void)
@@ -165,6 +274,30 @@ static void disarm_timer(void)
 
 	memset(&it, 0, sizeof(it));
 	setitimer(ITIMER_REAL, &it, NULL);
+	if (sigmask_saved)
+		sigprocmask(SIG_SETMASK, &saved_sigmask, NULL);
+}
+
+static void set_real_mode_seg(struct kvm_segment *seg, int is_code)
+{
+	memset(seg, 0, sizeof(*seg));
+	seg->base = 0;
+	seg->limit = 0xffff;
+	seg->selector = 0;
+	/* Code: accessed+readable+executable (0xb). Data: accessed+writable (0x3).
+	 * base == selector << 4, which rmode_segment_valid requires when
+	 * unrestricted guest is off. The accessed bit is what unrestricted
+	 * VM-entry checks; vmx_set_segment also forces it on.
+	 */
+	seg->type = is_code ? 0xb : 0x3;
+	seg->present = 1;
+	seg->s = 1;
+	seg->dpl = 0;
+	seg->db = 0;
+	seg->l = 0;
+	seg->g = 0;
+	seg->avl = 0;
+	seg->unusable = 0;
 }
 
 /* IO data lives at data_offset in the vCPU mapping, which on v6.6.160 is
@@ -193,11 +326,15 @@ static int check_io(const struct kvm_run *run, size_t map_size, unsigned char *o
 		fprintf(stderr, "ERROR: io.count %u is outside 1..4096\n", count);
 		return -1;
 	}
-	if ((uint64_t)count > UINT64_MAX / size) {
+	if (size != 0 && (uint64_t)count > UINT64_MAX / size) {
 		fprintf(stderr, "ERROR: io size*count overflows\n");
 		return -1;
 	}
 	nbytes = (uint64_t)size * count;
+	if (off > UINT64_MAX - nbytes) {
+		fprintf(stderr, "ERROR: io data_offset+size*count overflows\n");
+		return -1;
+	}
 	if (off > map_size || nbytes > map_size - off) {
 		fprintf(stderr,
 			"ERROR: io data [%llu, +%llu) outside mmap %zu\n",
@@ -259,7 +396,7 @@ int main(void)
 	const char *path = getenv("KN_KVM_DEVICE");
 	long page;
 	int kvm_fd = -1, vm_fd = -1, vcpu_fd = -1;
-	int api, cap, map_ret, rc = EXIT_ERR;
+	int api, cap, imm, map_ret, rc = EXIT_ERR;
 	void *guest = MAP_FAILED;
 	struct kvm_run *run = MAP_FAILED;
 	size_t guest_size = 0, run_size = 0;
@@ -269,6 +406,13 @@ int main(void)
 	struct timespec t0;
 	unsigned runs;
 	int saw_io = 0;
+
+	if (getenv("KN_KVM_TEST_SIGNAL") != NULL) {
+		int tr = test_pending_signal();
+
+		disarm_timer();
+		return tr;
+	}
 
 	if (!path || !path[0])
 		path = "/dev/kvm";
@@ -316,7 +460,11 @@ int main(void)
 
 	vm_fd = xioctl(kvm_fd, KVM_CREATE_VM, 0);
 	if (vm_fd < 0) {
-		if (errno == ENODEV || errno == ENXIO || errno == EOPNOTSUPP) {
+		/* v6.6.160 hardware_enable_all collapses a failed VMXON
+		 * into -EBUSY. EINVAL (bad VM type) stays a real error.
+		 * EOPNOTSUPP is not this path.
+		 */
+		if (errno == ENODEV || errno == ENXIO || errno == EBUSY) {
 			fprintf(stderr, "SKIP: no-virtualization KVM_CREATE_VM: %s\n",
 				strerror(errno));
 			rc = EXIT_SKIP;
@@ -338,6 +486,11 @@ int main(void)
 		     MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
 	if (guest == MAP_FAILED) {
 		explain_errno("mmap guest");
+		goto out;
+	}
+	if (((uintptr_t)guest & (uintptr_t)(page - 1)) != 0 ||
+	    (guest_size & (size_t)(page - 1)) != 0) {
+		fprintf(stderr, "ERROR: guest RAM is not page aligned\n");
 		goto out;
 	}
 	memset(guest, 0, guest_size);
@@ -367,6 +520,12 @@ int main(void)
 			fprintf(stderr, "ERROR: KVM_GET_VCPU_MMAP_SIZE returned 0\n");
 		goto out;
 	}
+	if (map_ret < 2 * (int)page || (map_ret % (int)page) != 0) {
+		fprintf(stderr,
+			"ERROR: KVM_GET_VCPU_MMAP_SIZE %d does not cover the run page and the PIO page\n",
+			map_ret);
+		goto out;
+	}
 	run_size = (size_t)map_ret;
 	run = mmap(NULL, run_size, PROT_READ | PROT_WRITE, MAP_SHARED, vcpu_fd, 0);
 	if (run == MAP_FAILED) {
@@ -378,8 +537,12 @@ int main(void)
 		explain_errno("KVM_GET_SREGS");
 		goto out;
 	}
-	sregs.cs.selector = 0;
-	sregs.cs.base = 0;
+	set_real_mode_seg(&sregs.cs, 1);
+	set_real_mode_seg(&sregs.ds, 0);
+	set_real_mode_seg(&sregs.es, 0);
+	set_real_mode_seg(&sregs.fs, 0);
+	set_real_mode_seg(&sregs.gs, 0);
+	set_real_mode_seg(&sregs.ss, 0);
 	sregs.cr0 &= ~((1ULL << 0) | (1ULL << 31));
 	if (xioctl(vcpu_fd, KVM_SET_SREGS, (unsigned long)&sregs) < 0) {
 		explain_errno("KVM_SET_SREGS");
@@ -396,7 +559,16 @@ int main(void)
 		goto out;
 	}
 
-	if (arm_signals() != 0)
+	if (install_handlers() != 0)
+		goto out;
+	imm = xioctl(kvm_fd, KVM_CHECK_EXTENSION, KVM_CAP_IMMEDIATE_EXIT);
+	if (imm < 0) {
+		explain_errno("KVM_CHECK_EXTENSION KVM_CAP_IMMEDIATE_EXIT");
+		goto out;
+	}
+	immediate_exit_ok = imm > 0;
+	run_for_signal = run;
+	if (arm_kvm_run_signals(vcpu_fd) != 0)
 		goto out;
 	if (clock_gettime(CLOCK_MONOTONIC, &t0) != 0) {
 		explain_errno("clock_gettime");

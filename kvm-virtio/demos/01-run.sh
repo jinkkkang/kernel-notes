@@ -33,6 +33,25 @@ run_capture() {
 	CAPTURE_RC=$rc
 }
 
+echo "==== self-test: pending SIGALRM ===="
+if command -v timeout >/dev/null 2>&1; then
+	run_capture timeout --foreground 3 env KN_KVM_TEST_SIGNAL=1 ./01-minimal-kvm
+else
+	run_capture env KN_KVM_TEST_SIGNAL=1 ./01-minimal-kvm
+fi
+if [[ "$CAPTURE_RC" -ne 0 ]]; then
+	echo "self-test failed: signal handoff exit $CAPTURE_RC, want 0" >&2
+	exit 1
+fi
+if ! grep -q '^signal_test=pending-delivered$' "$tmp/out"; then
+	echo "self-test failed: signal handoff did not print signal_test=pending-delivered" >&2
+	exit 1
+fi
+if grep -q '^result=ok$' "$tmp/out"; then
+	echo "self-test failed: signal handoff printed result=ok" >&2
+	exit 1
+fi
+
 echo "==== self-test: missing device ===="
 run_capture env KN_KVM_DEVICE="$tmp/no-such-kvm" ./01-minimal-kvm
 if [[ "$CAPTURE_RC" -ne 77 ]]; then
